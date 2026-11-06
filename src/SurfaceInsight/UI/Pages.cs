@@ -21,11 +21,16 @@ public sealed partial class MainWindow
         var c = new TimeSeriesChart { Height = height, Group = group, Axes = axes, AxisUnit = unit }; System.Windows.Automation.AutomationProperties.SetName(c, name); c.IntervalSelected += SetCustom; return c;
     }
     ChartSeries S(string name, double[] v, Color c, string unit, bool fill = false, bool stacked = false, bool dashed = false, bool right = false, double w = 2.2, string fmt = "F1") => new() { Name = name, Values = v, Color = c, Unit = unit, Fill = fill, Stacked = stacked, Dashed = dashed, Right = right, Width = w, Format = fmt };
-    static Border ChartCard(string title, string sub, UIElement chart)
+    static Border ChartCard(string title, string sub, UIElement chart, Action? more = null, string moreLabel = "")
     {
         var h = new DockPanel(); var s = Ui.Dim(sub, 12, false); s.VerticalAlignment = VerticalAlignment.Bottom; DockPanel.SetDock(s, Dock.Right); h.Children.Add(s); h.Children.Add(Ui.T(title, 15, true));
-        return Ui.Card(Ui.V(10, h, chart));
+        if (more == null) return Ui.Card(Ui.V(10, h, chart));
+        var link = MoreLink(moreLabel, more); link.HorizontalAlignment = HorizontalAlignment.Right; return Ui.Card(Ui.V(10, h, chart, link));
     }
+    /// <summary>Small "Label ›" button used as a drill-down affordance under cards whose body cannot itself be clickable (charts select intervals by dragging).</summary>
+    static Button MoreLink(string label, Action click) => Ui.RowBtn(Ui.T(label + "  ›", 12, true, Pal.AccentText), click, new Thickness(6, 4, 6, 4), null, label);
+    /// <summary>Opens the Apps page sorted by the given column, with no search or filter hiding rows.</summary>
+    void GoApps(string sort) { sortKey = sort; sortDesc = true; appFilter = "all"; appQuery = ""; Go("apps"); }
     string Runtime()
     {
         var valid = recent.Where(a => !a.Ac && a.Watts > 0 && a.Time > DateTime.UtcNow.AddMinutes(-3)).ToList(); if (valid.Count == 0 || latest?.Remaining is not double rem || rem <= 0) return "Unavailable";
@@ -34,23 +39,27 @@ public sealed partial class MainWindow
 
     // =================================================== NOW
     sealed class Tile { public Border Card = null!; public TextBlock Value = null!, Sub = null!; public Sparkline Spark = null!; }
-    Tile MakeTile(string cap, string unit)
+    Tile MakeTile(string cap, string unit, Action? open = null, string openName = "")
     {
         var t = new Tile { Value = Ui.T("—", 36, false, null, false, FontWeights.Bold), Sub = Ui.Dim("", 12), Spark = new Sparkline { Height = 38, Margin = new Thickness(0, 8, 0, 0) } };
         var u = Ui.T(unit, 15, false, Pal.Text2); u.VerticalAlignment = VerticalAlignment.Bottom; u.Margin = new Thickness(6, 0, 0, 7);
-        t.Card = Ui.Card(Ui.V(3, Ui.Cap(cap), Ui.H(0, t.Value, u), t.Sub, t.Spark)); return t;
+        if (open == null) { t.Card = Ui.Card(Ui.V(3, Ui.Cap(cap), Ui.H(0, t.Value, u), t.Sub, t.Spark)); return t; }
+        var head = new DockPanel(); var go = Ui.T("›", 16, true, Pal.AccentText); DockPanel.SetDock(go, Dock.Right); head.Children.Add(go); head.Children.Add(Ui.Cap(cap));
+        var btn = Ui.RowBtn(Ui.V(3, head, Ui.H(0, t.Value, u), t.Sub, t.Spark), open, new Thickness(18), null, openName);
+        t.Card = Ui.Card(btn, 0, 18); return t;
     }
     UIElement NowPage(out Action update)
     {
         var root = new StackPanel(); var tiles = new AutoGrid { MinItemWidth = 210 };
-        var draw = MakeTile("Device draw", "W"); var charge = MakeTile("Charge", "%"); var cpu = MakeTile("CPU", "%"); var gpu = MakeTile("GPU", "%"); var npuTile = data?.HasNpu == true || latest?.Npu != null ? MakeTile("NPU", "%") : null;
-        var netTile = Network.NetworkSettings.IsEnabled ? MakeTile("Network", "") : null;
+        var draw = MakeTile("Device draw", "W", () => Go("timeline"), "Device draw. Open the timeline"); var charge = MakeTile("Charge", "%", () => Go("battery"), "Charge. Open battery details"); var cpu = MakeTile("CPU", "%", () => GoApps("cpu"), "CPU. Open apps sorted by CPU"); var gpu = MakeTile("GPU", "%", () => GoApps("gpu"), "GPU. Open apps sorted by GPU");
+        var npuTile = data?.HasNpu == true || latest?.Npu != null ? MakeTile("NPU", "%", () => { var top = latest?.Apps.Where(x => x.Npu > 0.5).OrderByDescending(x => x.Npu).FirstOrDefault(); if (top != null && data?.App(top.Name) != null) Go("apps", top.Name); else GoApps("npu"); }, "NPU. Open the app using it most, or apps sorted by NPU") : null;
+        var netTile = Network.NetworkSettings.IsEnabled ? MakeTile("Network", "", () => Go("network"), "Network. Open network monitoring") : null;
         foreach (var t in new[] { draw, charge, cpu, gpu }) tiles.Children.Add(t.Card); if (npuTile != null) tiles.Children.Add(npuTile.Card); if (netTile != null) tiles.Children.Add(netTile.Card); root.Children.Add(tiles);
 
         var grid = new AutoGrid { MinItemWidth = 270, Margin = new Thickness(0, 14, 0, 0) };
-        var chart = NewChart(210, "Battery draw over the selected interval", true, "W"); var hero = ChartCard("Battery draw", "Whole device · dashed: screen brightness (right axis)", chart); AutoGrid.SetSpan(hero, 2); grid.Children.Add(hero);
-        var power = new StackPanel(); var powerCard = Ui.Card(power); grid.Children.Add(powerCard); root.Children.Add(grid);
-        var whyHost = new ContentControl { Margin = new Thickness(0, 14, 0, 0) }; root.Children.Add(whyHost);
+        var chart = NewChart(210, "Battery draw over the selected interval", true, "W"); var hero = ChartCard("Battery draw", "Whole device · dashed: screen brightness (right axis)", chart, () => Go("timeline"), "Open timeline"); AutoGrid.SetSpan(hero, 2); grid.Children.Add(hero);
+        var powerBody = new StackPanel(); var powerCard = Ui.Card(Ui.V(10, powerBody, MoreLink("Battery details", () => Go("battery")))); grid.Children.Add(powerCard); root.Children.Add(grid);
+        var whyHost = new ContentControl { Margin = new Thickness(0, 14, 0, 0) }; root.Children.Add(whyHost); var whyLink = MoreLink("Compare these periods on the timeline", () => Go("timeline")); whyLink.HorizontalAlignment = HorizontalAlignment.Right; root.Children.Add(whyLink);
 
         root.Children.Add(Section("What may be driving activity")); root.Children.Add(Ui.Dim("Ranked by average CPU in the selected interval. Activity alone does not establish a cause of drain; compare an interval after the work ends.", 12));
         var drivers = new AutoGrid { MinItemWidth = 250, Margin = new Thickness(0, 12, 0, 0) }; root.Children.Add(drivers);
@@ -67,9 +76,9 @@ public sealed partial class MainWindow
             if (netTile != null) { var ns = Network.NetworkSettings.ReadStatus(); bool live = ns.LastOkUtc is DateTime nt && (DateTime.UtcNow - nt).TotalSeconds < 45 && ns.Mode is Network.NetMode.Basic or Network.NetMode.Enhanced; netTile.Value.Text = live ? "↓ " + Bytes(ns.RxBps) + "/s" : "—"; netTile.Value.FontSize = 26; netTile.Sub.Text = live ? "↑ " + Bytes(ns.TxBps) + "/s · physical adapter counters" : "Waiting for the tray monitor"; netTile.Spark.Set(Array.Empty<double>(), Pal.Watts); }
             chart.Times = d.Times(); chart.Series = DrawSeries(d); chart.Markers = d.Markers.Select(m => m.Time).ToList(); chart.Notes = DrawExplainer.Events(d).Select(e => (e.Utc, e.Label)).ToList(); chart.Refresh();
             whyHost.Content = WhyCard(d, s);
-            power.Children.Clear(); power.Children.Add(Ui.T("Power", 16, true));
-            var chips = new WrapPanel { Margin = new Thickness(0, 10, 0, 10) }; var c1 = Ui.Chip(s == null ? "—" : s.Ac ? "Plugged in" : "On battery", Pal.AccentText, Pal.AccentBg); c1.Margin = new Thickness(0, 0, 8, 6); var c2 = Ui.Chip(s?.Mode ?? "Power mode unavailable", Pal.OkText, Pal.OkBg); chips.Children.Add(c1); chips.Children.Add(c2); power.Children.Add(chips);
-            power.Children.Add(Ui.Dim($"Brightness {N(s?.Brightness, "F0")}%\nInterrupt activity {N(s?.Interrupts)}%\nCPU frequency indicator {N(s?.Frequency, "F0")} MHz\nFull-charge capacity {N(s?.Full / 1000)} Wh", 13));
+            powerBody.Children.Clear(); powerBody.Children.Add(Ui.T("Power", 16, true));
+            var chips = new WrapPanel { Margin = new Thickness(0, 10, 0, 10) }; var c1 = Ui.Chip(s == null ? "—" : s.Ac ? "Plugged in" : "On battery", Pal.AccentText, Pal.AccentBg); c1.Margin = new Thickness(0, 0, 8, 6); var c2 = Ui.Chip(s?.Mode ?? "Power mode unavailable", Pal.OkText, Pal.OkBg); chips.Children.Add(c1); chips.Children.Add(c2); powerBody.Children.Add(chips);
+            powerBody.Children.Add(Ui.Dim($"Brightness {N(s?.Brightness, "F0")}%\nInterrupt activity {N(s?.Interrupts)}%\nCPU frequency indicator {N(s?.Frequency, "F0")} MHz\nFull-charge capacity {N(s?.Full / 1000)} Wh", 13));
             Rebuild(drivers, () => d.Ranked().Take(3).Select(DriverCard));
         };
         return root;
@@ -149,11 +158,11 @@ public sealed partial class MainWindow
         System.Windows.Automation.AutomationProperties.SetName(search, "Search applications");
         var sbox = new Border { CornerRadius = new CornerRadius(17), Background = Pal.Inset, BorderBrush = Pal.Edge, BorderThickness = new Thickness(1), Padding = new Thickness(12, 5, 12, 5), Child = Ui.H(8, new TextBlock { Text = "", FontFamily = Icons, Foreground = Pal.Text2, VerticalAlignment = VerticalAlignment.Center }, search) };
         var filterHost = new ContentControl(); var bar = new WrapPanel(); sbox.Margin = new Thickness(0, 0, 12, 8); filterHost.Margin = new Thickness(0, 0, 0, 8); bar.Children.Add(sbox); bar.Children.Add(filterHost); root.Children.Add(bar);
-        void Filters() => filterHost.Content = Ui.Seg(new[] { ("All", "all"), ("Sustained", "Sustained"), ("Brief spikes", "Brief spikes"), ("Low", "Low") }, appFilter, k => { appFilter = k; Filters(); rows(); });
-        var header = new Grid(); var rowsPanel = new StackPanel(); var table = Ui.V(0, header, rowsPanel); table.MinWidth = 900;
+        void Filters() => filterHost.Content = Ui.Seg(FilterOptions(), appFilter, k => { appFilter = k; Filters(); rows(); });
+        var header = new Grid(); var rowsPanel = new StackPanel(); var table = Ui.V(0, header, rowsPanel); table.MinWidth = 1030;
         var tableScroll = new ScrollViewer { HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Content = table, Focusable = false };
         var card = Ui.Card(tableScroll, 6, 20); card.Margin = new Thickness(0, 4, 0, 0); root.Children.Add(card);
-        root.Children.Add(new Border { Margin = new Thickness(0, 14, 0, 0), Child = Ui.Dim("CPU is normalized to all logical processors. I/O includes non-disk operations. GPU is the busiest engine, not an additive total; NPU is the app's average share of the busiest NPU engine. Apps group by executable name; protected processes may be absent.", 12) });
+        root.Children.Add(new Border { Margin = new Thickness(0, 14, 0, 0), Child = Ui.Dim("CPU is normalized to all logical processors. I/O includes non-disk operations. GPU is the busiest engine, not an additive total; NPU is the app's average share of the busiest NPU engine. Architecture is what the program was built for; on an Arm64 device, x64 and x86 programs run through emulation, which is slower and uses more battery (Arm64EC apps report as x64). Apps group by executable name; protected processes may be absent.", 12) });
 
         void Cols(Grid g) { foreach (var w in AppColumns()) g.ColumnDefinitions.Add(w == 0 ? new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 200 } : new ColumnDefinition { Width = new GridLength(w) }); }
         Cols(header); header.Margin = new Thickness(0, 6, 0, 0);
@@ -164,12 +173,12 @@ public sealed partial class MainWindow
             else { var t = Ui.Cap(label + (sortKey == key ? (sortDesc ? " ↓" : " ↑") : "")); t.HorizontalAlignment = right ? HorizontalAlignment.Right : HorizontalAlignment.Left; el = Ui.RowBtn(t, () => { if (sortKey == key) sortDesc = !sortDesc; else { sortKey = key; sortDesc = true; } Heads(); rows(); }, new Thickness(4, 8, 8, 8), null, "Sort by " + label); }
             Grid.SetColumn(el, col); header.Children.Add(el);
         }
-        void Heads() { header.Children.Clear(); Head(0, "Application", "name", false); Head(1, "Trend", ""); Head(2, "Avg CPU", "cpu"); Head(3, "Peak", "peak"); Head(4, "CPU-sec", "secs"); Head(5, "Memory", "mem"); Head(6, "I/O", "io"); Head(7, "GPU", "gpu"); if (Npu()) { Head(8, "NPU", "npu"); Head(9, "Activity", "act", false); } else Head(8, "Activity", "act", false); }
+        void Heads() { header.Children.Clear(); Head(0, "Application", "name", false); Head(1, "Architecture", "arch", false); Head(2, "Trend", ""); Head(3, "Avg CPU", "cpu"); Head(4, "Peak", "peak"); Head(5, "CPU-sec", "secs"); Head(6, "Memory", "mem"); Head(7, "I/O", "io"); Head(8, "GPU", "gpu"); if (Npu()) { Head(9, "NPU", "npu"); Head(10, "Activity", "act", false); } else Head(9, "Activity", "act", false); }
         Heads(); Filters();
         void rows() => Rebuild(rowsPanel, () =>
         {
-            var d = data!; var q = appQuery.Trim(); IEnumerable<AppAgg> l = d.Apps.Values.Where(a => (q.Length == 0 || a.Name.Contains(q, StringComparison.OrdinalIgnoreCase)) && (appFilter == "all" || a.Activity == appFilter));
-            Func<AppAgg, IComparable> key = sortKey switch { "name" => a => a.Name, "peak" => a => a.Peak, "secs" => a => a.CpuSeconds, "mem" => a => a.AvgMem, "io" => a => a.AvgIo, "gpu" => a => a.Gpu ?? -1, "npu" => a => a.AvgNpu ?? -1, "act" => a => a.Activity, _ => a => a.AvgCpu };
+            var d = data!; var q = appQuery.Trim(); IEnumerable<AppAgg> l = d.Apps.Values.Where(a => (q.Length == 0 || a.Name.Contains(q, StringComparison.OrdinalIgnoreCase)) && (appFilter == "all" || (appFilter == "emulated" ? a.Emulated : a.Activity == appFilter)));
+            Func<AppAgg, IComparable> key = sortKey switch { "name" => a => a.Name, "peak" => a => a.Peak, "secs" => a => a.CpuSeconds, "mem" => a => a.AvgMem, "io" => a => a.AvgIo, "gpu" => a => a.Gpu ?? -1, "npu" => a => a.AvgNpu ?? -1, "act" => a => a.Activity, "arch" => a => a.Arch, _ => a => a.AvgCpu };
             var sorted = (sortDesc ? l.OrderByDescending(key) : l.OrderBy(key)).Take(250).ToList();
             if (sorted.Count == 0) return new UIElement[] { new Border { Padding = new Thickness(16), Child = Ui.Dim("No applications match this filter in the selected interval.", 13) } };
             return sorted.Select(AppRow);
@@ -179,7 +188,9 @@ public sealed partial class MainWindow
         return root;
     }
     bool Npu() => data?.HasNpu == true;
-    double[] AppColumns() => Npu() ? new double[] { 0, 110, 72, 64, 88, 84, 84, 62, 62, 112 } : new double[] { 0, 110, 72, 64, 88, 84, 84, 62, 112 };
+    double[] AppColumns() => Npu() ? new double[] { 0, 124, 110, 72, 64, 88, 84, 84, 62, 62, 112 } : new double[] { 0, 124, 110, 72, 64, 88, 84, 84, 62, 112 };
+    /// <summary>Filter chips for the Apps table. "Emulated" only makes sense on Arm64 Windows, where x64/x86 programs are translated.</summary>
+    static (string, string)[] FilterOptions() { var l = new List<(string, string)> { ("All", "all"), ("Sustained", "Sustained"), ("Brief spikes", "Brief spikes"), ("Low", "Low") }; if (System.Runtime.InteropServices.RuntimeInformation.OSArchitecture == System.Runtime.InteropServices.Architecture.Arm64) l.Add(("Emulated", "emulated")); return l.ToArray(); }
     void RefreshRowsIfIdle(Panel p, Action rows) { if (!p.IsKeyboardFocusWithin && !p.IsMouseOver && !(Keyboard.FocusedElement is TextBox)) rows(); }
     UIElement AppRow(AppAgg a)
     {
@@ -187,11 +198,12 @@ public sealed partial class MainWindow
         void Put(UIElement e, int c) { Grid.SetColumn(e, c); g.Children.Add(e); }
         TextBlock R(string t, bool dim = false) { var x = Ui.T(t, 13, false, dim ? Pal.Text2 : Pal.Text); x.HorizontalAlignment = HorizontalAlignment.Right; x.VerticalAlignment = VerticalAlignment.Center; x.Margin = new Thickness(0, 0, 8, 0); return x; }
         var name = Ui.H(10, Ui.Dot(Pal.AppColor(a.Name)), Ui.T(a.Name, 14, true), Ui.Dim("×" + a.Inst.Count, 12, false)); name.VerticalAlignment = VerticalAlignment.Center; Put(name, 0);
-        var sp = new Sparkline { Height = 26, Width = 92, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center }; sp.Set(data!.AppCpu(a.Name), Pal.AppColor(a.Name), false); Put(sp, 1);
-        Put(R(a.AvgCpu.ToString("F2") + "%"), 2); Put(R(a.Peak.ToString("F1") + "%", true), 3); Put(R(a.CpuSeconds.ToString("N0")), 4); Put(R(a.AvgMem.ToString("N0") + " MB", true), 5); Put(R((a.AvgIo / 1024).ToString("N0") + " KB/s", true), 6); Put(R(a.Gpu.HasValue ? a.Gpu.Value.ToString("F0") + "%" : "—", true), 7);
-        if (Npu()) Put(R(a.AvgNpu > 0 ? a.AvgNpu.Value.ToString(a.AvgNpu >= 10 ? "F0" : "F1") + "%" : "—", true), 8);
-        var chip = Ui.ActivityChip(a.Activity); chip.VerticalAlignment = VerticalAlignment.Center; Put(chip, Npu() ? 9 : 8);
-        return Ui.RowBtn(g, () => Go("apps", a.Name), new Thickness(14, 9, 6, 9), null, $"{a.Name}, average CPU {a.AvgCpu:F2} percent, {a.Activity}. Open details");
+        var sp = new Sparkline { Height = 26, Width = 92, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center }; sp.Set(data!.AppCpu(a.Name), Pal.AppColor(a.Name), false); Put(sp, 2);
+        FrameworkElement arch = a.Emulated ? Ui.Chip(a.Arch, Pal.WarnText, Pal.WarnBg) : Ui.T(a.Arch, 13, false, Pal.Text2); arch.VerticalAlignment = VerticalAlignment.Center; arch.Margin = new Thickness(0, 0, 8, 0); Put(arch, 1);
+        Put(R(a.AvgCpu.ToString("F2") + "%"), 3); Put(R(a.Peak.ToString("F1") + "%", true), 4); Put(R(a.CpuSeconds.ToString("N0")), 5); Put(R(a.AvgMem.ToString("N0") + " MB", true), 6); Put(R((a.AvgIo / 1024).ToString("N0") + " KB/s", true), 7); Put(R(a.Gpu.HasValue ? a.Gpu.Value.ToString("F0") + "%" : "—", true), 8);
+        if (Npu()) Put(R(a.AvgNpu > 0 ? a.AvgNpu.Value.ToString(a.AvgNpu >= 10 ? "F0" : "F1") + "%" : "—", true), 9);
+        var chip = Ui.ActivityChip(a.Activity); chip.VerticalAlignment = VerticalAlignment.Center; Put(chip, Npu() ? 10 : 9);
+        return Ui.RowBtn(g, () => Go("apps", a.Name), new Thickness(14, 9, 6, 9), null, $"{a.Name}, {(a.Arch == "—" ? "architecture unknown" : a.Arch)}, average CPU {a.AvgCpu:F2} percent, {a.Activity}. Open details");
     }
 
     // =================================================== APP DETAIL
@@ -202,6 +214,7 @@ public sealed partial class MainWindow
         var c = Pal.AppColor(a.Name); var stats = new AutoGrid { MinItemWidth = 170 };
         void Stat(string k, string v, string sub) => stats.Children.Add(Ui.Card(Ui.V(2, Ui.Cap(k), Ui.T(v, 28, false, null, false, FontWeights.Bold), Ui.Dim(sub, 12)), 16));
         Stat("Average CPU", a.AvgCpu.ToString("F2") + "%", $"Peak {a.Peak:F1}%"); Stat("CPU-seconds", a.CpuSeconds.ToString("N0"), "Weighted by observed time"); Stat("Share of CPU time", a.Share.ToString("F0") + "%", "Of all observed processes · not watts"); Stat("Memory", a.AvgMem.ToString("N0") + " MB", "Working set across instances"); Stat("General I/O", (a.AvgIo / 1048576).ToString("F2") + " MB/s", "Includes non-disk operations"); Stat("GPU", a.Gpu.HasValue ? a.Gpu.Value.ToString("F0") + "%" : "Unavailable", "Busiest engine observed"); if (d.HasNpu) Stat("NPU", (a.AvgNpu ?? 0).ToString(a.AvgNpu >= 10 ? "F0" : "F1") + "%", a.Npu > 0 ? $"Average · peak {a.Npu:F0}% of the NPU" : "Not observed using the NPU");
+        stats.Children.Add(Ui.Card(Ui.V(2, Ui.Cap("Architecture"), Ui.T(a.Arch, 20, false, a.Emulated ? Pal.WarnText : null, false, FontWeights.Bold), Ui.Dim(a.Arch == "—" ? "Windows did not report it (protected process)" : a.Emulated ? "Emulated: slower and uses more battery than a native build" : a.Arch == "Mixed" ? "Instances differ; see the list below" : "Native to this device", 12)), 16));
         root.Children.Add(stats);
 
         var chart = NewChart(240, a.Name + " CPU compared with device draw", true, "%"); var legend = Ui.H(18, Ui.H(6, Ui.Dot(c, 10), Ui.Dim(a.Name + " CPU (left axis)", 12, false)), Ui.H(6, Ui.Dot(Pal.Watts, 10), Ui.Dim("Device draw, watts (right axis, dashed)", 12, false)));
@@ -218,15 +231,15 @@ public sealed partial class MainWindow
         mem.Times = times; mem.Series = new() { S("Memory", d.AppMemMb(a.Name), Pal.Gpu, "MB", fill: true, fmt: "F0") }; mem.Refresh(); io.Times = times; io.Series = new() { S("I/O", d.AppIoMb(a.Name), Pal.Io, "MB/s", fill: true, fmt: "F2") }; io.Refresh();
         if (npu != null) { npu.Times = times; npu.Series = new() { S("NPU", d.AppNpu(a.Name), Pal.Npu, "%", fill: true) }; npu.Refresh(); }
 
-        var lower = new AutoGrid { MinItemWidth = 340, Margin = new Thickness(0, 14, 0, 0) };
+        var lower = new AutoGrid { MinItemWidth = 440, Margin = new Thickness(0, 14, 0, 0) };
         var inst = new StackPanel(); inst.Children.Add(Ui.T("Instances", 16, true)); inst.Children.Add(Ui.Dim("Each process with this executable name observed in the interval.", 12));
-        var hg = new Grid { Margin = new Thickness(0, 10, 0, 0) }; foreach (var w in new double[] { 70, 0, 80, 74, 66 }) hg.ColumnDefinitions.Add(w == 0 ? new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) } : new ColumnDefinition { Width = new GridLength(w) });
-        void Cell(Grid g, int col, string t, bool cap, bool right) { UIElement e = cap ? Ui.Cap(t) : Ui.T(t, 13, false, col == 1 || col == 4 ? Pal.Text2 : Pal.Text); if (right && e is FrameworkElement fe) fe.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(e, col); g.Children.Add(e); }
-        string[] heads = { "PID", "Started", "Observed", "Avg CPU", "Peak" }; for (int i = 0; i < 5; i++) Cell(hg, i, heads[i], true, i >= 2); inst.Children.Add(hg);
+        var hg = new Grid { Margin = new Thickness(0, 10, 0, 0) }; foreach (var w in new double[] { 70, 0, 112, 80, 74, 66 }) hg.ColumnDefinitions.Add(w == 0 ? new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) } : new ColumnDefinition { Width = new GridLength(w) });
+        void Cell(Grid g, int col, string t, bool cap, bool right) { UIElement e = cap ? Ui.Cap(t) : Ui.T(t, 13, false, col == 1 || col == 5 ? Pal.Text2 : Pal.Text); if (right && e is FrameworkElement fe) fe.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(e, col); g.Children.Add(e); }
+        string[] heads = { "PID", "Started", "Architecture", "Observed", "Avg CPU", "Peak" }; for (int i = 0; i < 6; i++) Cell(hg, i, heads[i], true, i >= 3); inst.Children.Add(hg);
         foreach (var i in a.Inst.Values.OrderByDescending(x => x.CpuPctSec).Take(12))
         {
-            var g = new Grid { Margin = new Thickness(0, 8, 0, 0) }; foreach (var w in new double[] { 70, 0, 80, 74, 66 }) g.ColumnDefinitions.Add(w == 0 ? new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) } : new ColumnDefinition { Width = new GridLength(w) });
-            var life = TimeSpan.FromSeconds(i.Sec); Cell(g, 0, i.Pid.ToString(), false, false); Cell(g, 1, new DateTime(i.Start, DateTimeKind.Utc).ToLocalTime().ToString("MMM d HH:mm"), false, false); Cell(g, 2, life.TotalHours >= 1 ? $"{(int)life.TotalHours}h {life.Minutes:D2}m" : $"{life.Minutes}m {life.Seconds:D2}s", false, true); Cell(g, 3, (i.Sec > 0 ? i.CpuPctSec / i.Sec : 0).ToString("F2") + "%", false, true); Cell(g, 4, i.Peak.ToString("F1") + "%", false, true); inst.Children.Add(g);
+            var g = new Grid { Margin = new Thickness(0, 8, 0, 0) }; foreach (var w in new double[] { 70, 0, 112, 80, 74, 66 }) g.ColumnDefinitions.Add(w == 0 ? new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) } : new ColumnDefinition { Width = new GridLength(w) });
+            var life = TimeSpan.FromSeconds(i.Sec); Cell(g, 0, i.Pid.ToString(), false, false); Cell(g, 1, new DateTime(i.Start, DateTimeKind.Utc).ToLocalTime().ToString("MMM d HH:mm"), false, false); Cell(g, 2, Platform.ArchLabel(i.Mach), false, false); Cell(g, 3, life.TotalHours >= 1 ? $"{(int)life.TotalHours}h {life.Minutes:D2}m" : $"{life.Minutes}m {life.Seconds:D2}s", false, true); Cell(g, 4, (i.Sec > 0 ? i.CpuPctSec / i.Sec : 0).ToString("F2") + "%", false, true); Cell(g, 5, i.Peak.ToString("F1") + "%", false, true); inst.Children.Add(g);
         }
         lower.Children.Add(Ui.Card(inst));
 
