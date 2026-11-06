@@ -18,7 +18,7 @@ gh auth login
 Then download and run the installer from this repo (the repo is private, so use `gh`):
 
 ```powershell
-gh api repos/OWNER/surface-insight/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" > install.ps1
+gh api repos/khurrammuhammad/surface-insight/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" > install.ps1
 .\install.ps1
 ```
 

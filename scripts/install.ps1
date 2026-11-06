@@ -4,7 +4,7 @@
   Then:           .\install.ps1            (re-run any time to update)
   Your history in %LOCALAPPDATA%\SurfaceInsight is never touched.
 #>
-param([string]$Repo = 'OWNER/surface-insight', [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\SurfaceInsight'), [string]$Tag = '')
+param([string]$Repo = 'khurrammuhammad/surface-insight', [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\SurfaceInsight'), [string]$Tag = '')
 $ErrorActionPreference = 'Stop'
 
 # Real machine architecture, even when this PowerShell is itself running under emulation.
