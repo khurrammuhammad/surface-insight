@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 
 # Real machine architecture, even when this PowerShell is itself running under emulation.
 Add-Type -Namespace Native -Name Wow -MemberDefinition '[DllImport("kernel32.dll")] public static extern bool IsWow64Process2(System.IntPtr process, out ushort processMachine, out ushort nativeMachine);'
-[ushort]$pm = 0; [ushort]$nm = 0
+[uint16]$pm = 0; [uint16]$nm = 0
 $arch = if ([Native.Wow]::IsWow64Process2([Diagnostics.Process]::GetCurrentProcess().Handle, [ref]$pm, [ref]$nm)) { switch ($nm) { 0xAA64 { 'arm64' } 0x8664 { 'x64' } default { throw ("Unsupported processor (machine type 0x{0:X4}). Surface Insight supports Windows x64 and Arm64." -f $nm) } } }
          else { if ($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64' -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' } }
 Write-Host "This laptop: Windows $arch"
