@@ -1,0 +1,59 @@
+# Surface Insight
+
+## Run
+Extract SurfaceInsight-Portable.zip into a permanent folder and launch SurfaceInsight.exe. Keep all bundled files together; the x64 .NET runtime is included. A copy is already running from the SurfaceInsight folder beside this guide.
+
+Close releases the dashboard process while the tray monitor continues collecting. Double-click its icon to reopen. Use its tray menu > Quit to stop monitoring. Start at sign-in is optional in Settings and defaults off; choose a permanent location before enabling it.
+
+## The dashboard (redesigned 4 Nov 2026)
+Sidebar pages: Now, Timeline, Apps, Battery, Investigate, Settings. The range selector (15m–30d, or Custom…) applies to Now, Timeline, Apps and Battery. Drag across any timeline chart to zoom into that interval; hover shows a shared crosshair on all charts. On Timeline, switch app layers on and off to stack their CPU. In Apps, sort, search or filter, then open an app to see its CPU against device draw, memory, I/O, instances and peak moments; a peak opens that time on the Timeline. “Show this app’s quietest period” sets a custom interval for comparison. When network monitoring has recorded the app, its detail page also lists every hostname or address it contacted in the selected interval, how each name was learned (the app’s own DNS lookup, a system-wide candidate, or reverse DNS), first and last seen, and traffic when an enhanced session covered it. On laptops with an NPU, the NPU appears on Now, the Timeline (with the GPU), the Apps table and each app’s detail page, measured from Windows’ own engine counters. NPU work is no longer counted as GPU. A Live/Stale badge shows whether the background collector is writing fresh samples. Appearance (System/Light/Dark) is in Settings and follows Windows live.
+
+## Network (basic monitoring, off by default)
+Network sits after Apps in the sidebar. Turn it on from the Network page or Settings; a disclosure explains what is recorded. While on, the tray monitor snapshots Windows’ TCP/UDP connection tables every 5 seconds (15 when the dashboard is closed) and records which applications hold connections to which IP addresses and ports, plus physical-adapter byte counters. History is kept up to 30 days on this device (detail 48 hours, then 15-minute summaries, 100 MB budget) and is not encrypted by Surface Insight. It can reveal which apps and services you use even though URLs and content are never recorded. Clear it in Settings.
+Limits: this mode shows presence and counts of snapshots, not bytes per application or per destination. Short-lived connections between snapshots can be missed, and UDP lists local sockets, not remote peers. Hostnames are not shown because there is no DNS evidence yet; an IP is an observed endpoint, not proof of a domain. Adapter rates come from interface counters and are not per-application. Applications are identified by executable path; protected processes appear as “Unattributed”. No blocking exists yet. “Not blocked by Surface Insight” means only that no block of ours exists.
+Enhanced monitoring (optional): on the Network page choose Start enhanced monitoring… (or the tray menu). Windows asks for administrator permission; a small helper (the same executable started with --network-broker) runs elevated for that session only. It listens to Windows’ built-in network and DNS-client events and sends per-second summaries to the tray monitor, which stores them. You get observed transport bytes per application and per destination (sent/received, TCP and UDP, IPv4 and IPv6), and hostnames where the DNS evidence supports them. Stop it from the Network page or tray, or quit the tray monitor; it also ends if the tray monitor dies. It is never restarted automatically, and no service, driver or firewall rule is installed.
+Bytes are transport bytes seen by Windows, not ISP-billed usage or file sizes (an HTTPS download of 5,000,000 bytes measured 5,013,019). Bytes exist only while an enhanced session ran; other times show as gaps or “—”, never as zero, and the page states what fraction of the interval is covered. Hostnames come from DNS answers the requesting application received: “Process DNS match” means that application resolved the name to that address; “Recent system DNS candidate” is weaker (any process, within five minutes, as Windows reports no TTL). Several names can share one IP, encrypted/browser-internal DNS, proxies, VPNs and CDNs can hide the real name, and a name is never proof of what a connection carried. Bytes stay on the endpoint and are never split across names. Reverse DNS is only looked up when you click it and sends a DNS query.
+Temporary blocking (needs a running enhanced session): select an application on the Network page and choose Temporary block…. A confirmation lists exactly what happens. The block covers outbound connections (IPv4 and IPv6) from every running instance of exactly that executable path, for the current Windows user only, including local-network and loopback traffic, and applies only while the enhanced session runs. It is implemented with Windows Filtering Platform filters in a dynamic session, so Windows removes them the moment the helper ends: when you press Remove block or Remove all blocks (also in the tray menu), stop enhanced monitoring, quit the tray monitor, or if either process dies. Nothing is ever restored automatically, and no permanent firewall rule or driver is created. “Temporary block active” appears only after the helper confirms the filters; otherwise you see the error. Adding a block can reset a connection the program already had open (seen in testing), and the block does not override other firewall or enterprise rules or stop the program from running. Refused targets: Surface Insight itself, shared system hosts (such as svchost.exe), programs in the Windows folder, Store-packaged apps, network paths and programs whose path is unknown. Block, removal and “blocks ended” events appear as markers on the Timeline and are kept in the local audit log. Blocked-attempt counts are not shown because they are not measured.
+
+## Find the cause of drain
+1. Leave the app running during normal work for at least several minutes.
+2. Mark “Fans are loud now” when you hear them.
+3. Select a time interval above the tabs, enter From/To local dates, or drag across a timeline chart. Overview ranks CPU contributors and shows CPU/device-power correlations; Applications shows grouped process metrics and CPU-second totals, weighted by observed duration. Timeline shows battery draw, CPU, GPU and general process I/O.
+4. Compare an interval after the suspected application's work ends. A correlation is a lead, not proof. Display, hardware, drivers and shared services contribute to device power.
+5. Battery shows reported health, discharge periods split by observed power conditions, and collection gaps with capacity changes. A collection gap can mean sleep or the app being closed.
+6. Investigate starts a 60-second CPU/power recording with an administrator prompt and creates Windows battery/SleepStudy reports. Cancel ends the recording early and saves it. Report generation may continue afterward. Existing WPR recordings are left alone. Investigate summarizes sampled CPU execution, driver DPC/ISR work, and modeled energy where recorded. It also summarizes sleep drain, low-power residency, reported blockers and Windows historical modeled power. “Analyze saved trace” imports an existing ETL without elevation. Raw reports remain available for further analysis in Windows Performance Analyzer.
+
+Export saves the selected interval as CSV samples or an HTML explanation. Settings can clear the monitoring history. Local data is stored at %LOCALAPPDATA%\SurfaceInsight. Raw diagnostic captures are retained separately and can be large; remove old capture folders when no longer needed.
+
+## Measurement limits
+- Fan RPM and CPU temperature are unavailable on the tested ordinary Windows session. No sensor driver is installed. Fan events are manually marked.
+- Watts measure the whole battery-powered device. No exact per-application watts are claimed. Runtime uses the last three minutes of available observations and changes with workload.
+- GPU is the busiest supported 3D/compute/video engine, not total additive utilization. One native PDH query samples available engines together.
+- Process I/O includes non-disk operations; it is not physical disk throughput. Protected processes may be absent. Apps group by executable name.
+- CPU is normalized to all logical processors. The first observation initializes counters. Sustained/spike labels are simple average/peak thresholds.
+- CPU-second totals and average CPU are weighted by observation duration. Traces use statistical CPU sampling, which can contain gaps. Modeled per-app energy is explicitly labeled and may be absent; driver activity alone does not establish a fault.
+- Samples are stored immediately. Older observations are averaged by minute where power conditions match. Automatic maintenance runs hourly; the history database is pruned at approximately 250 MB. Raw captures and exports are outside that cap.
+- A tray process samples at 5 seconds while a dashboard heartbeat is present, and 15 seconds otherwise. Collection skips suspend and resets its timing on resume. The dashboard opens as a separate process and reads local history. Theme follows Windows at launch. No cloud requests or automatic system adjustments occur.
+
+## Validation on this Surface
+Release build and portable launch passed. Automated checks passed for application ranking, missing-process averages, watts, SQLite persistence, 30-day expiration, clear history, insufficient correlation data, live battery capacity, and CPU ranges. Live dashboard accessibility and rendering were inspected.
+
+The revised tray process measured 0.044% average normalized CPU, 90.5 MB working set and 40.2 MB private memory in a 40-second measurement after warmup. Both background targets were met in that short check. Opening the dashboard or running deep diagnostics uses additional memory; the dashboard exits when closed.
+
+21 automated checks pass, including duration weighting, CPU seconds, process grouping, storage, expiration, minute aggregation, report units, missing-data handling, recorder-status protection, and live CPU/GPU/battery collectors. A real administrator 60-second capture and its CPU/driver analysis succeeded. The actual Surface battery and SleepStudy XML reports were parsed successfully. The trace had no Energy Estimation Engine intervals; historical modeled power was available in SleepStudy instead.
+
+Real suspend/resume and denied-UAC UI flows have not been forced on your active Windows session. These remain manual acceptance checks. Final UI automation was blocked by the desktop helper failing to resolve the foreground process. This is not a claim of full 30-day endurance testing.
+
+Explicit Windows diagnostic captures may contain process metadata, paths and command lines beyond the routine history schema. The 60-second capture can produce large ETL files and temporarily increase load. Parsing is isolated in a helper and limited to three minutes; raw traces are retained if analysis fails or times out. Cancelling a capture saves the partial trace and skips remaining analysis. Startup and notifications stay off unless you enable startup.
+
+## Source
+SurfaceInsight-Source.zip contains the C# project. Install the .NET 10 SDK, then run:
+
+    dotnet publish -c Release -r win-x64 --self-contained true -o publish
+
+For the included smoke checks:
+
+    SurfaceInsight.exe --self-test
+
+That command writes a pass/fail checklist to self-test.txt beside the executable. Dependencies restore through NuGet. Source uses WPF, WinForms tray integration, Microsoft.Data.Sqlite, System.Management and performance counters.
+

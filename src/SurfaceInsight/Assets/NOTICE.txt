@@ -1,0 +1,12 @@
+﻿Surface Insight bundled data
+============================
+
+IP geolocation (Assets\dbip-city-lite.mmdb)
+  "IP to City Lite" by DB-IP.com, https://db-ip.com
+  Licensed under the Creative Commons Attribution 4.0 International License (CC BY 4.0),
+  https://creativecommons.org/licenses/by/4.0/
+  Downloaded 4 November 2026 (2026-11 edition). Used unmodified, offline only. Locations are approximate
+  and describe where an address is registered or announced (often a CDN or cloud region), not who owns it.
+
+Map outlines (Assets\ne_50m_land.geojson, Assets\ne_50m_admin_0_boundary_lines_land.geojson)
+  Natural Earth, https://www.naturalearthdata.com — public domain.

@@ -1,0 +1,14 @@
+bin/
+obj/
+out/
+dist/
+publish*/
+*.mmdb
+*.db
+*.db-wal
+*.db-shm
+*.etl
+*.zip
+self-test.txt
+*.user
+.vs/
