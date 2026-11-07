@@ -1,12 +1,16 @@
 # Surface Insight
 
 ## Run
-Extract SurfaceInsight-Portable.zip into a permanent folder and launch SurfaceInsight.exe. Keep all bundled files together; the x64 .NET runtime is included. A copy is already running from the SurfaceInsight folder beside this guide.
+Install with the one-line installer in the [README](../README.md#install), or download the zip for your PC (x64 or Arm64) from the Releases page, extract it into a permanent folder and launch `SurfaceInsight.exe`. Keep all bundled files together; the .NET runtime is included. A single-file `.exe` is also offered on releases (experimental).
 
 Close releases the dashboard process while the tray monitor continues collecting. Double-click its icon to reopen. Use its tray menu > Quit to stop monitoring. Start at sign-in is optional in Settings and defaults off; choose a permanent location before enabling it.
 
-## The dashboard (redesigned 4 Nov 2026)
-Sidebar pages: Now, Timeline, Apps, Battery, Investigate, Settings. The range selector (15m–30d, or Custom…) applies to Now, Timeline, Apps and Battery. Drag across any timeline chart to zoom into that interval; hover shows a shared crosshair on all charts. On Timeline, switch app layers on and off to stack their CPU. In Apps, sort, search or filter, then open an app to see its CPU against device draw, memory, I/O, instances and peak moments; a peak opens that time on the Timeline. “Show this app’s quietest period” sets a custom interval for comparison. When network monitoring has recorded the app, its detail page also lists every hostname or address it contacted in the selected interval, how each name was learned (the app’s own DNS lookup, a system-wide candidate, or reverse DNS), first and last seen, and traffic when an enhanced session covered it. On laptops with an NPU, the NPU appears on Now, the Timeline (with the GPU), the Apps table and each app’s detail page, measured from Windows’ own engine counters. NPU work is no longer counted as GPU. A Live/Stale badge shows whether the background collector is writing fresh samples. Appearance (System/Light/Dark) is in Settings and follows Windows live.
+## The dashboard
+Sidebar pages: Now, Timeline, Apps, Network, Battery, Investigate, Settings. The range selector (15m–30d, or Custom…) applies to Now, Timeline, Apps and Battery. Drag across any timeline chart to zoom into that interval; hover shows a shared crosshair on all charts. On Timeline, switch app layers on and off to stack their CPU. In Apps, sort, search or filter, then open an app to see its CPU against device draw, memory, I/O, instances and peak moments; a peak opens that time on the Timeline. “Show this app’s quietest period” sets a custom interval for comparison. When network monitoring has recorded the app, its detail page also lists every hostname or address it contacted in the selected interval, how each name was learned (the app’s own DNS lookup, a system-wide candidate, or reverse DNS), first and last seen, and traffic when an enhanced session covered it. On laptops with an NPU, the NPU appears on Now, the Timeline (with the GPU), the Apps table and each app’s detail page, measured from Windows’ own engine counters. NPU work is no longer counted as GPU. A Live/Stale badge shows whether the background collector is writing fresh samples. Appearance (System/Light/Dark) is in Settings and follows Windows live.
+
+Everything on Now is a shortcut: the Device draw tile opens the Timeline, Charge opens Battery, CPU and GPU open Apps sorted by that column, NPU opens the app using it (or Apps sorted by NPU), and Network opens the Network page. The Battery draw chart, Power card and “Why draw changed” card have links to the Timeline or Battery. The chart itself is not a link, because dragging across it selects an interval.
+
+**Architecture.** The Apps table shows what CPU architecture each program was built for: x64, x86 (32-bit), Arm64 or Arm (32-bit). On a Windows on Arm device, x64 and x86 programs run through emulation and are marked “emulated”: they work, but are slower and use more battery than a native Arm64 build. Use the Emulated filter (shown on Arm devices) to list them. An app with both native and emulated instances shows “Mixed”; its detail page lists the architecture of each instance. Windows does not report the architecture of protected processes, which show “—”, and Arm64EC programs report as x64.
 
 ## Network (basic monitoring, off by default)
 Network sits after Apps in the sidebar. Turn it on from the Network page or Settings; a disclosure explains what is recorded. While on, the tray monitor snapshots Windows’ TCP/UDP connection tables every 5 seconds (15 when the dashboard is closed) and records which applications hold connections to which IP addresses and ports, plus physical-adapter byte counters. History is kept up to 30 days on this device (detail 48 hours, then 15-minute summaries, 100 MB budget) and is not encrypted by Surface Insight. It can reveal which apps and services you use even though URLs and content are never recorded. Clear it in Settings.
@@ -18,7 +22,7 @@ Temporary blocking (needs a running enhanced session): select an application on 
 ## Find the cause of drain
 1. Leave the app running during normal work for at least several minutes.
 2. Mark “Fans are loud now” when you hear them.
-3. Select a time interval above the tabs, enter From/To local dates, or drag across a timeline chart. Overview ranks CPU contributors and shows CPU/device-power correlations; Applications shows grouped process metrics and CPU-second totals, weighted by observed duration. Timeline shows battery draw, CPU, GPU and general process I/O.
+3. Select a time interval above the tabs, enter From/To local dates, or drag across a timeline chart. Now ranks CPU contributors and explains changes in device draw; Apps shows grouped process metrics and CPU-second totals, weighted by observed duration. Timeline shows battery draw, CPU, GPU and general process I/O.
 4. Compare an interval after the suspected application's work ends. A correlation is a lead, not proof. Display, hardware, drivers and shared services contribute to device power.
 5. Battery shows reported health, discharge periods split by observed power conditions, and collection gaps with capacity changes. A collection gap can mean sleep or the app being closed.
 6. Investigate starts a 60-second CPU/power recording with an administrator prompt and creates Windows battery/SleepStudy reports. Cancel ends the recording early and saves it. Report generation may continue afterward. Existing WPR recordings are left alone. Investigate summarizes sampled CPU execution, driver DPC/ISR work, and modeled energy where recorded. It also summarizes sleep drain, low-power residency, reported blockers and Windows historical modeled power. “Analyze saved trace” imports an existing ETL without elevation. Raw reports remain available for further analysis in Windows Performance Analyzer.
@@ -35,25 +39,22 @@ Export saves the selected interval as CSV samples or an HTML explanation. Settin
 - Samples are stored immediately. Older observations are averaged by minute where power conditions match. Automatic maintenance runs hourly; the history database is pruned at approximately 250 MB. Raw captures and exports are outside that cap.
 - A tray process samples at 5 seconds while a dashboard heartbeat is present, and 15 seconds otherwise. Collection skips suspend and resets its timing on resume. The dashboard opens as a separate process and reads local history. Theme follows Windows at launch. No cloud requests or automatic system adjustments occur.
 
-## Validation on this Surface
-Release build and portable launch passed. Automated checks passed for application ranking, missing-process averages, watts, SQLite persistence, 30-day expiration, clear history, insufficient correlation data, live battery capacity, and CPU ranges. Live dashboard accessibility and rendering were inspected.
+## Testing
+Automated checks cover application ranking, missing-process averages, watts, SQLite persistence, 30-day expiration, clear history, insufficient correlation data, live battery capacity, architecture labels, and CPU ranges. The checks run on every build in GitHub Actions (x64, without live hardware checks); run them yourself with `--self-test`.
 
-The revised tray process measured 0.044% average normalized CPU, 90.5 MB working set and 40.2 MB private memory in a 40-second measurement after warmup. Both background targets were met in that short check. Opening the dashboard or running deep diagnostics uses additional memory; the dashboard exits when closed.
+The tray process measured about 0.04% average normalized CPU and about 90 MB working set in a short check on a Surface after warmup. Opening the dashboard or running deep diagnostics uses additional memory; the dashboard exits when closed. A real administrator 60-second capture and its CPU/driver analysis, and the battery and SleepStudy XML reports, were parsed successfully on a Surface.
 
-21 automated checks pass, including duration weighting, CPU seconds, process grouping, storage, expiration, minute aggregation, report units, missing-data handling, recorder-status protection, and live CPU/GPU/battery collectors. A real administrator 60-second capture and its CPU/driver analysis succeeded. The actual Surface battery and SleepStudy XML reports were parsed successfully. The trace had no Energy Estimation Engine intervals; historical modeled power was available in SleepStudy instead.
-
-Real suspend/resume and denied-UAC UI flows have not been forced on your active Windows session. These remain manual acceptance checks. Final UI automation was blocked by the desktop helper failing to resolve the foreground process. This is not a claim of full 30-day endurance testing.
+Real suspend/resume and denied-UAC flows are manual acceptance checks and are not covered by automated tests. There has been no full 30-day endurance test.
 
 Explicit Windows diagnostic captures may contain process metadata, paths and command lines beyond the routine history schema. The 60-second capture can produce large ETL files and temporarily increase load. Parsing is isolated in a helper and limited to three minutes; raw traces are retained if analysis fails or times out. Cancelling a capture saves the partial trace and skips remaining analysis. Startup and notifications stay off unless you enable startup.
 
 ## Source
-SurfaceInsight-Source.zip contains the C# project. Install the .NET 10 SDK, then run:
+See the README for building from source. In short, with the .NET 10 SDK on Windows:
 
-    dotnet publish -c Release -r win-x64 --self-contained true -o publish
+    .\scripts\build.ps1 -Arch all
 
-For the included smoke checks:
+For the smoke checks:
 
     SurfaceInsight.exe --self-test
 
-That command writes a pass/fail checklist to self-test.txt beside the executable. Dependencies restore through NuGet. Source uses WPF, WinForms tray integration, Microsoft.Data.Sqlite, System.Management and performance counters.
-
+That command writes a pass/fail checklist to `self-test.txt` beside the executable (add `--ci` on a PC without a battery). Dependencies restore through NuGet. The source uses WPF, WinForms tray integration, Microsoft.Data.Sqlite, System.Management and performance counters.

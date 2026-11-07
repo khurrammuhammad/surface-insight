@@ -20,21 +20,36 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Build x64 and Arm64 packages
+      - name: Build x64 and Arm64 packages (zip and single-file exe)
         shell: pwsh
-        run: ./scripts/build.ps1 -Arch all
+        run: ./scripts/build.ps1 -Arch all -SingleFile
 
-      - name: Self-test (x64 build, no live hardware checks)
+      - name: Self-test (x64 zip build, no live hardware checks)
         shell: pwsh
         run: |
           $p = Start-Process ./out/publish-win-x64/SurfaceInsight.exe -ArgumentList '--self-test','--ci' -PassThru -Wait
           Get-Content ./out/publish-win-x64/self-test.txt
           if ($p.ExitCode -ne 0) { throw "Self-test failed (exit $($p.ExitCode))" }
 
+      # The single-file exe is only published when it passes the same test. If it fails, the zips still ship.
+      - name: Self-test (x64 single-file exe)
+        id: sfx
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $p = Start-Process ./out/publish-single-win-x64/SurfaceInsight.exe -ArgumentList '--self-test','--ci' -PassThru -Wait
+          Get-Content ./out/publish-single-win-x64/self-test.txt
+          if ($p.ExitCode -ne 0) { throw "Single-file self-test failed (exit $($p.ExitCode))" }
+
+      - name: Stage release files
+        shell: pwsh
+        run: |
+          if ('${{ steps.sfx.outcome }}' -eq 'success') { ./scripts/stage-release.ps1 } else { Write-Warning 'Single-file exe failed its self-test and is left out.'; ./scripts/stage-release.ps1 -NoExe }
+
       - uses: actions/upload-artifact@v4
         with:
           name: SurfaceInsight-packages
-          path: dist/*.zip
+          path: dist/release/*
           retention-days: 14
           compression-level: 0
 
@@ -43,4 +58,9 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" (Get-ChildItem dist/*.zip).FullName --title "Surface Insight ${{ github.ref_name }}" --generate-notes
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $generated = gh api "repos/${{ github.repository }}/releases/generate-notes" -f tag_name=$tag --jq .body
+          $header = (Get-Content .github/release-header.md -Raw).Replace('{{TAG}}', $tag)
+          Set-Content release-notes.md ($header + $generated) -Encoding utf8
+          gh release create $tag (Get-ChildItem dist/release/*).FullName --title "Surface Insight $tag" --notes-file release-notes.md
