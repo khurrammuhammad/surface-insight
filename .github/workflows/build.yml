@@ -46,7 +46,7 @@ jobs:
         run: |
           if ('${{ steps.sfx.outcome }}' -eq 'success') { ./scripts/stage-release.ps1 } else { Write-Warning 'Single-file exe failed its self-test and is left out.'; ./scripts/stage-release.ps1 -NoExe }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: SurfaceInsight-packages
           path: dist/release/*
