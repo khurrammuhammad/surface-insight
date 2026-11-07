@@ -1,6 +1,8 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Input;
 using System.Windows.Media;
 namespace SurfaceInsight;
@@ -38,13 +40,78 @@ public sealed class TimeSeriesChart : FrameworkElement
     public ChartGroup? Group; public double? FixedMax; public bool Axes = true; public string AxisUnit = "";
     public event Action<DateTime, DateTime>? IntervalSelected;
     double? dragFrom, dragTo; ChartGroup? attached;
+    int keyboardIndex; int? keyboardAnchor;
 
-    public TimeSeriesChart() { Cursor = Cursors.Cross; SnapsToDevicePixels = true; Focusable = false; ClipToBounds = true; }
+    public TimeSeriesChart() { Cursor = Cursors.Cross; SnapsToDevicePixels = true; Focusable = true; ClipToBounds = true;
+        AutomationProperties.SetName(this, "Time series chart");
+        AutomationProperties.SetHelpText(this, "Left and right inspect samples; Home and End jump to the edges. Hold Shift to select an interval, then Enter to zoom. Escape cancels selection.");
+        AutomationProperties.SetLiveSetting(this, AutomationLiveSetting.Polite); }
     public void Refresh() { Reattach(); InvalidateVisual(); }
     void Reattach() { if (attached == Group) return; if (attached != null) attached.Changed -= OnGroup; attached = Group; if (attached != null) attached.Changed += OnGroup; }
     void OnGroup() => InvalidateVisual();
     protected override void OnVisualParentChanged(DependencyObject oldParent) { base.OnVisualParentChanged(oldParent); if (Parent == null && attached != null) { attached.Changed -= OnGroup; attached = null; } else Reattach(); }
-    protected override AutomationPeer OnCreateAutomationPeer() => new FrameworkElementAutomationPeer(this);
+    protected override AutomationPeer OnCreateAutomationPeer() => new ChartPeer(this);
+    public string AccessibleValue
+    {
+        get
+        {
+            if (Times.Length == 0) return "No chart data.";
+            int i = Math.Clamp(keyboardIndex, 0, Times.Length - 1);
+            return DateTime.FromOADate(Times[i]).ToString("g") + "; " + string.Join("; ", Series.Select(s => s.Name + ": " +
+                (i < s.Values.Length && double.IsFinite(s.Values[i]) ? s.Values[i].ToString(s.Format, CultureInfo.CurrentCulture) + " " + s.Unit : "unavailable")));
+        }
+    }
+    sealed class ChartPeer(TimeSeriesChart chart) : FrameworkElementAutomationPeer(chart), IValueProvider
+    {
+        public bool IsReadOnly => true;
+        public string Value => chart.AccessibleValue;
+        public void SetValue(string value) => throw new InvalidOperationException("Chart values are read-only.");
+        public override object? GetPattern(PatternInterface patternInterface) => patternInterface == PatternInterface.Value ? this : base.GetPattern(patternInterface);
+        protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Document;
+        protected override string GetClassNameCore() => nameof(TimeSeriesChart);
+    }
+    protected override void OnGotKeyboardFocus(KeyboardFocusChangedEventArgs e)
+    {
+        base.OnGotKeyboardFocus(e);
+        InspectKeyboard();
+    }
+    void InspectKeyboard()
+    {
+        if (Times.Length == 0) return;
+        keyboardIndex = Math.Clamp(keyboardIndex, 0, Times.Length - 1);
+        Group?.Set(Times.Length > 1 ? keyboardIndex / (double)(Times.Length - 1) : 0);
+        ToolTip = AccessibleValue;
+        InvalidateVisual();
+        UIElementAutomationPeer.FromElement(this)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+    }
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (Times.Length == 0) return;
+        int before = keyboardIndex;
+        bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+        switch (e.Key)
+        {
+            case Key.Left: keyboardIndex--; break;
+            case Key.Right: keyboardIndex++; break;
+            case Key.Home: keyboardIndex = 0; break;
+            case Key.End: keyboardIndex = Times.Length - 1; break;
+            case Key.Enter:
+                if (keyboardAnchor is int a && a != keyboardIndex)
+                    IntervalSelected?.Invoke(DateTime.FromOADate(Times[Math.Min(a, keyboardIndex)]).ToUniversalTime(), DateTime.FromOADate(Times[Math.Max(a, keyboardIndex)]).ToUniversalTime());
+                keyboardAnchor = null; dragFrom = dragTo = null; break;
+            case Key.Escape: keyboardAnchor = null; dragFrom = dragTo = null; Group?.Set(null); break;
+            default: return;
+        }
+        keyboardIndex = Math.Clamp(keyboardIndex, 0, Times.Length - 1);
+        if (shift && e.Key is Key.Left or Key.Right or Key.Home or Key.End)
+        {
+            keyboardAnchor ??= Math.Clamp(before, 0, Times.Length - 1);
+            dragFrom = keyboardAnchor.Value / (double)Math.Max(1, Times.Length - 1);
+            dragTo = keyboardIndex / (double)Math.Max(1, Times.Length - 1);
+        }
+        InspectKeyboard(); e.Handled = true;
+    }
 
     (double x0, double x1, double y0, double y1) Plot(bool right) => (Axes ? 42 : 0, ActualWidth - (right ? 44 : Axes ? 6 : 0), AxisUnit.Length > 0 ? 18 : 10, ActualHeight - (Axes ? 22 : 2));
     double XAt(int i, double x0, double x1) { double t0 = Times[0], t1 = Times[^1]; return x0 + (t1 > t0 ? (Times[i] - t0) / (t1 - t0) : 0) * (x1 - x0); }
@@ -57,7 +124,7 @@ public sealed class TimeSeriesChart : FrameworkElement
 
     protected override void OnRender(DrawingContext dc)
     {
-        double W = ActualWidth, H = ActualHeight; dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, W, H));
+        double W = ActualWidth, H = ActualHeight; dc.DrawRectangle(Brushes.Transparent, IsKeyboardFocusWithin ? new Pen(SystemColors.HighlightBrush, 2) : null, new Rect(1, 1, Math.Max(0, W - 2), Math.Max(0, H - 2)));
         if (W < 30 || H < 30) return;
         if (Times.Length < 2 || Series.Count == 0 || Series.All(s => s.Values.All(v => !double.IsFinite(v))))
         { var t = ChartText.Ft(this, "No data in this range yet", 12, Pal.Text2); dc.DrawText(t, new Point((W - t.Width) / 2, (H - t.Height) / 2)); return; }
@@ -163,7 +230,7 @@ public sealed class TimeSeriesChart : FrameworkElement
     double Frac(MouseEventArgs e) { var (x0, x1, _, _) = Plot(Series.Any(s => s.Right)); return Math.Clamp((e.GetPosition(this).X - x0) / Math.Max(1, x1 - x0), 0, 1); }
     protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); double f = Frac(e); if (dragFrom != null) { dragTo = f; InvalidateVisual(); } if (Group != null) Group.Set(f); else InvalidateVisual(); }
     protected override void OnMouseLeave(MouseEventArgs e) { base.OnMouseLeave(e); if (dragFrom == null) { if (Group != null) Group.Set(null); else InvalidateVisual(); } }
-    protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e) { base.OnMouseLeftButtonDown(e); if (IntervalSelected == null || Times.Length < 2) return; dragFrom = Frac(e); dragTo = dragFrom; CaptureMouse(); }
+    protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e) { base.OnMouseLeftButtonDown(e); Focus(); if (IntervalSelected == null || Times.Length < 2) return; dragFrom = Frac(e); dragTo = dragFrom; CaptureMouse(); }
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonUp(e); if (dragFrom == null) return; ReleaseMouseCapture();

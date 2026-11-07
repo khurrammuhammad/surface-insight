@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Microsoft.Data.Sqlite;
 namespace SurfaceInsight.Network;
 
@@ -171,6 +171,7 @@ CREATE VIEW IF NOT EXISTS net_traffic AS SELECT t AS ts, app_id, endpoint_id, pr
             if (n.Name.Length == 0 || n.Name.Length > 255) continue; long app = n.Pid > 0 && n.Path != null ? AppId(Identity(n.Pid, n.Path), t) : 0;
             foreach (var ip in n.Ips.Take(32)) using (var c = Cmd("INSERT OR IGNORE INTO net_name(name,ip,app_id,t,src) VALUES($n,$i,$a,$t,$s)", ("$n", n.Name), ("$i", ip), ("$a", app), ("$t", n.T > 0 ? n.T : t), ("$s", n.Src))) c.ExecuteNonQuery();
         }
+        if (m.DroppedFrames > 0) Coverage(now, now, "frames-dropped", m.DroppedFrames + " transport batches were dropped; at least " + m.DroppedBytes + " bytes are missing. This interval is incomplete.");
         if (m.Lost > 0) Coverage(now, now, "etw-events-lost", m.Lost + " ETW events were lost; byte totals for this moment may be incomplete.");
         if (m.Overflow > 0) Coverage(now, now, "queue-overflow", m.Overflow + " events were dropped because the broker queue was full.");
         if (m.Unsupported > 0) Coverage(now, now, "unsupported-events", m.Unsupported + " events used a layout this version does not decode.");

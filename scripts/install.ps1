@@ -1,112 +1,257 @@
 <#
-  Installs, updates or removes Surface Insight. Picks the build that matches this PC (x64 or Arm64) from the latest GitHub release.
-
-  Install or update (PowerShell, no admin rights needed):
-      irm https://raw.githubusercontent.com/khurrammuhammad/surface-insight/main/scripts/install.ps1 | iex
-
-  With options, download the script first:
-      irm https://raw.githubusercontent.com/khurrammuhammad/surface-insight/main/scripts/install.ps1 -OutFile install.ps1
-      .\install.ps1                 # install or update (your history is kept)
-      .\install.ps1 -Tag v1.1.0     # a specific release
-      .\install.ps1 -Uninstall      # remove the program and shortcut, keep history
-      .\install.ps1 -Uninstall -RemoveData   # also delete history in %LOCALAPPDATA%\SurfaceInsight
-
-  Re-running the install command updates in place. The download is verified against the release's SHA256SUMS.txt.
+Installs/updates Surface Insight using a mandatory checksum and a file inventory.
+Use a dedicated folder. -Uninstall preserves unknown/modified files and history.
 #>
 param(
     [string]$Repo = 'khurrammuhammad/surface-insight',
-    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\SurfaceInsight'),
+    [string]$InstallDir = $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\SurfaceInsight' } else { '' }),
     [string]$Tag = '',
     [switch]$Uninstall,
     [switch]$RemoveData,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$FunctionsOnly
 )
 $ErrorActionPreference = 'Stop'
-try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+$manifestName = 'surface-insight.files.json'
 
-if ($env:OS -ne 'Windows_NT') { throw 'Surface Insight runs on Windows 11 only.' }
-$releasesPage = "https://github.com/$Repo/releases"
-$shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Surface Insight.lnk'
-$dataDir = Join-Path $env:LOCALAPPDATA 'SurfaceInsight'
-
-function Stop-SurfaceInsight {
-    $running = Get-Process SurfaceInsight -ErrorAction SilentlyContinue
-    if (-not $running) { return }
-    if (-not $Force) {
-        $ans = Read-Host 'Surface Insight is running. Close it to continue? Monitoring pauses briefly. (y/n)'
-        if ($ans -notmatch '^[Yy]') { throw 'Cancelled. Nothing was changed.' }
-    }
-    $running | Stop-Process -Force; Start-Sleep -Seconds 2
-}
-
-if ($Uninstall) {
-    Stop-SurfaceInsight
-    if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force; Write-Host "Removed $InstallDir" } else { Write-Host "Nothing installed at $InstallDir" }
-    if (Test-Path $shortcut) { Remove-Item $shortcut -Force; Write-Host 'Removed the Start menu shortcut.' }
-    try { Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'SurfaceInsight' -ErrorAction SilentlyContinue } catch { }
-    if ($RemoveData -and (Test-Path $dataDir)) {
-        $ok = $Force; if (-not $ok) { $ok = (Read-Host "Delete your history in $dataDir ? This cannot be undone. (y/n)") -match '^[Yy]' }
-        if ($ok) { Remove-Item $dataDir -Recurse -Force; Write-Host "Deleted $dataDir" } else { Write-Host 'History kept.' }
-    } elseif (Test-Path $dataDir) { Write-Host "Your history is kept in $dataDir (use -RemoveData to delete it)." }
-    Write-Host 'Done.'
-}
-else {
-    # Real machine architecture, even when this PowerShell is itself running under emulation.
-    Add-Type -Namespace Native -Name Wow -MemberDefinition '[DllImport("kernel32.dll")] public static extern bool IsWow64Process2(System.IntPtr process, out ushort processMachine, out ushort nativeMachine);' -ErrorAction SilentlyContinue
-    [uint16]$pm = 0; [uint16]$nm = 0
-    $arch = $null
-    try { if ([Native.Wow]::IsWow64Process2([Diagnostics.Process]::GetCurrentProcess().Handle, [ref]$pm, [ref]$nm)) { $arch = switch ($nm) { 0xAA64 { 'arm64' } 0x8664 { 'x64' } default { throw ("Unsupported processor (machine type 0x{0:X4}). Surface Insight supports Windows x64 and Arm64." -f $nm) } } } } catch [System.EntryPointNotFoundException] { }
-    if (-not $arch) { $arch = if ($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64' -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } elseif ($env:PROCESSOR_ARCHITECTURE -eq 'x86' -and -not $env:PROCESSOR_ARCHITEW6432) { throw 'Surface Insight needs 64-bit Windows 11 (x64 or Arm64).' } else { 'x64' } }
-    Write-Host "This PC: Windows $arch"
-
-    $tmp = Join-Path ([IO.Path]::GetTempPath()) ('SurfaceInsight-install-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $tmp | Out-Null
-    $oldProgress = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'   # the progress bar makes Windows PowerShell 5.1 downloads very slow
-    $stage = "$InstallDir.new"
-    try {
-        $api = if ($Tag) { "https://api.github.com/repos/$Repo/releases/tags/$Tag" } else { "https://api.github.com/repos/$Repo/releases/latest" }
-        try { $release = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'SurfaceInsight-installer'; 'Accept' = 'application/vnd.github+json' } -UseBasicParsing }
-        catch {
-            $code = 0; try { $code = [int]$_.Exception.Response.StatusCode } catch { }
-            if ($code -eq 404) { throw $(if ($Tag) { "Release $Tag was not found. See the available versions at $releasesPage" } else { "No release was found. See $releasesPage" }) }
-            throw "Could not read the release list from GitHub ($($_.Exception.Message)). Check your internet connection, or download the zip by hand from $releasesPage"
+function Assert-NoLinks([string]$Path) {
+    $p = [IO.Path]::GetFullPath($Path)
+    while ($p) {
+        if (Test-Path -LiteralPath $p) {
+            if ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked/reparse paths are not supported: $p" }
         }
-        $asset = $release.assets | Where-Object { $_.name -match "^SurfaceInsight-(.+-)?win-$arch\.zip$" } | Select-Object -First 1
-        if (-not $asset) { throw "Release $($release.tag_name) has no $arch download. See $releasesPage" }
-        Write-Host ("Downloading {0} ({1:N0} MB) from release {2} ..." -f $asset.name, ($asset.size / 1MB), $release.tag_name)
-        $zip = Join-Path $tmp $asset.name
-        try { Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -UseBasicParsing -Headers @{ 'User-Agent' = 'SurfaceInsight-installer' } }
-        catch { throw "Download failed ($($_.Exception.Message)). Try again, or download the zip by hand from $releasesPage" }
-
-        $sums = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1
-        if ($sums) {
-            $text = (Invoke-WebRequest -Uri $sums.browser_download_url -UseBasicParsing -Headers @{ 'User-Agent' = 'SurfaceInsight-installer' }).Content
-            if ($text -is [byte[]]) { $text = [Text.Encoding]::ASCII.GetString($text) }
-            $line = ($text -split "`r?`n") | Where-Object { $_ -match ('\s' + [regex]::Escape($asset.name) + '$') } | Select-Object -First 1
-            if (-not $line) { throw "SHA256SUMS.txt does not list $($asset.name). Nothing was installed." }
-            $want = ($line -split '\s+')[0].ToLower(); $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-            if ($want -ne $got) { throw "The download does not match its published checksum (expected $want, got $got). It may be corrupt or altered. Nothing was changed." }
-            Write-Host 'Checksum verified.'
-        } else { Write-Warning "Release $($release.tag_name) has no SHA256SUMS.txt, so the download could not be verified." }
-
-        # Unpack beside the install folder first, so a bad zip never breaks a working install.
-        if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-        Expand-Archive $zip -DestinationPath $stage -Force
-        if (-not (Test-Path (Join-Path $stage 'SurfaceInsight.exe'))) { throw 'The package did not contain SurfaceInsight.exe. Nothing was changed.' }
-
-        Stop-SurfaceInsight
-        if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force }
-        Rename-Item $stage (Split-Path $InstallDir -Leaf)
-        Get-ChildItem $InstallDir -Recurse -File | Unblock-File
-
-        $exe = Join-Path $InstallDir 'SurfaceInsight.exe'
-        $s = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut); $s.TargetPath = $exe; $s.WorkingDirectory = $InstallDir; $s.IconLocation = "$exe,0"; $s.Save()
-        Write-Host "Installed Surface Insight $($release.tag_name) to $InstallDir (Start menu: Surface Insight)."
-        Write-Host 'Run this command again any time to update. Your history is kept.'
-        Start-Process $exe
+        $p = [IO.Path]::GetDirectoryName($p)
     }
-    finally {
-        $ProgressPreference = $oldProgress
-        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-        if (Test-Path $stage) { Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue }
+}
+function Assert-NoLinksTree([string]$Path) {
+    Assert-NoLinks $Path
+    foreach ($item in Get-ChildItem -LiteralPath $Path -Force) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refusing recursive removal through a linked child: $($item.FullName)" }
+        if ($item.PSIsContainer) { Assert-NoLinksTree $item.FullName }
     }
+}
+function Get-SafeRoot([string]$Path) {
+    $p = [IO.Path]::GetFullPath($Path).TrimEnd([char[]]'\/')
+    if (!$p -or $p -eq [IO.Path]::GetPathRoot($p).TrimEnd([char[]]'\/')) { throw 'A drive root cannot be an installation folder.' }
+    Assert-NoLinks $p
+    return $p
+}
+function Get-SafeFile([string]$Root, [string]$Name) {
+    $parts = $Name.Replace('\', '/').Split('/')
+    foreach ($part in $parts) {
+        if (!$part -or $part -in '.', '..' -or $part -notmatch '^[A-Za-z0-9_. -]+$' -or $part -match '[. ]$' -or $part -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)') { throw "Unsafe package path: $Name" }
+    }
+    $p = [IO.Path]::GetFullPath((Join-Path $Root ($parts -join [IO.Path]::DirectorySeparatorChar)))
+    if (!$p.StartsWith($Root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Package path escapes its folder.' }
+    Assert-NoLinks $p
+    return $p
+}
+function Read-Inventory([string]$Root, [switch]$Verify) {
+    $Root = Get-SafeRoot $Root
+    $m = Get-Content -LiteralPath (Get-SafeFile $Root $manifestName) -Raw | ConvertFrom-Json
+    if ($m.Application -ne 'SurfaceInsight' -or $m.Schema -ne 1 -or !$m.Files) { throw 'Invalid Surface Insight inventory.' }
+    $files = @{}
+    foreach ($entry in $m.Files.PSObject.Properties) {
+        $p = Get-SafeFile $Root $entry.Name
+        if ($files.ContainsKey($entry.Name) -or $entry.Name -eq $manifestName -or $entry.Value -notmatch '^[a-fA-F0-9]{64}$') { throw 'Invalid or duplicate inventory entry.' }
+        if ($Verify -and (!(Test-Path -LiteralPath $p -PathType Leaf) -or (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ne $entry.Value)) { throw "Inventory verification failed: $($entry.Name)" }
+        $files[$entry.Name] = $entry.Value.ToLowerInvariant()
+    }
+    if (!$files.ContainsKey('SurfaceInsight.exe') -or $files.Count -gt 10000) { throw 'Missing application executable in inventory.' }
+    return $files
+}
+function Get-RequiredChecksum([string]$Text, [string]$Name) {
+    $found = @($Text -split '\r?\n' | Where-Object { $_.Trim() -match ('\s+\*?' + [regex]::Escape($Name) + '$') })
+    if ($found.Count -ne 1 -or $found[0].Trim() -notmatch '^([a-fA-F0-9]{64})\s+\*?.+$') { throw "A unique valid SHA-256 checksum is required for $Name. Nothing was installed." }
+    return $Matches[1].ToLowerInvariant()
+}
+function Get-NativeArchitecture {
+    if (!('SurfaceInsightInstaller.NativeArchitecture' -as [type])) {
+        Add-Type -Namespace SurfaceInsightInstaller -Name NativeArchitecture -MemberDefinition '[DllImport("kernel32.dll", SetLastError=true)] public static extern bool IsWow64Process2(System.IntPtr process, out ushort processMachine, out ushort nativeMachine);'
+    }
+    [uint16]$processMachine = 0; [uint16]$nativeMachine = 0
+    if (![SurfaceInsightInstaller.NativeArchitecture]::IsWow64Process2([Diagnostics.Process]::GetCurrentProcess().Handle, [ref]$processMachine, [ref]$nativeMachine)) { throw 'Windows could not determine the native architecture.' }
+    switch ($nativeMachine) {
+        0xAA64 { return 'arm64' }
+        0x8664 { return 'x64' }
+        default { throw 'Surface Insight requires Windows 11 x64 or Arm64.' }
+    }
+}
+function Stop-Installation([string]$Root) {
+    $exe = Join-Path $Root 'SurfaceInsight.exe'
+    $running = @(Get-Process SurfaceInsight -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $exe } catch { $false } })
+    if (!$running) { return }
+    if (!$Force -and (Read-Host 'Close this Surface Insight installation to continue? (y/n)') -notmatch '^[Yy]$') { throw 'Cancelled. Nothing was changed.' }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $id = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Root.TrimEnd([char[]]'\/').ToUpperInvariant())))).Replace('-', '').Substring(0, 24) } finally { $sha.Dispose() }
+    try { $quit = [Threading.EventWaitHandle]::OpenExisting("Local\SurfaceInsight.Quit.$id"); try { $quit.Set() | Out-Null } finally { $quit.Dispose() } } catch { }
+    foreach ($p in $running) { $p.CloseMainWindow() | Out-Null }
+    $deadline = (Get-Date).AddSeconds(15)
+    do { $left = @($running | Where-Object { !$_.HasExited }); if (!$left) { break }; Start-Sleep -Milliseconds 250 } while ((Get-Date) -lt $deadline)
+    foreach ($p in $left) { if (!$p.HasExited) { $p.Kill(); $p.WaitForExit(5000) | Out-Null } }
+}
+function Restore-Installation([string]$Root, [string]$Backup) {
+    $j = Get-Content -LiteralPath (Join-Path $Backup 'transaction.json') -Raw | ConvertFrom-Json
+    if ($j.Application -ne 'SurfaceInsight' -or $j.Target -ne (Get-SafeRoot $Root)) { throw 'Recovery journal does not belong to the installation.' }
+    $reverse = @($j.Entries); [array]::Reverse($reverse)
+    foreach ($e in $reverse) {
+        $dest = Get-SafeFile $Root $e.Name
+        $current = if (Test-Path -LiteralPath $dest -PathType Leaf) { (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+        if ($current -eq $e.Before) { continue }
+        if ($current -ne $e.After) { throw "Recovery stopped to preserve a subsequently modified file: $dest. Backup: $Backup" }
+        if ($e.Before) {
+            $src = Get-SafeFile $Backup $e.Backup
+            if ((Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne $e.Before) { throw 'Recovery backup hash mismatch.' }
+            Copy-Item -LiteralPath $src -Destination $dest -Force
+        } elseif (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest }
+    }
+}
+function Complete-Installation([string]$Backup) {
+    $j = Get-Content -LiteralPath (Join-Path $Backup 'transaction.json') -Raw | ConvertFrom-Json
+    if ($j.Application -ne 'SurfaceInsight') { throw 'Invalid recovery journal.' }
+    foreach ($e in $j.Entries) { if ($e.Before) { Remove-Item -LiteralPath (Get-SafeFile $Backup $e.Backup) } }
+    foreach ($name in 'healthy', 'transaction.json') { $p = Get-SafeFile $Backup $name; if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p } }
+    if (!@(Get-ChildItem -LiteralPath $Backup -Force).Count) { Remove-Item -LiteralPath $Backup }
+}
+function Install-Inventory([string]$Root, [string]$Stage, [string]$BackupRoot) {
+    $Root = Get-SafeRoot $Root
+    $new = Read-Inventory $Stage -Verify
+    $old = @{}
+    if (Test-Path -LiteralPath (Join-Path $Root $manifestName)) { $old = Read-Inventory $Root }
+    elseif ((Test-Path -LiteralPath $Root) -and @(Get-ChildItem -LiteralPath $Root -Force).Count) {
+        throw 'The destination has no ownership inventory. Use a new empty dedicated folder, or upgrade v1.1.0 through its in-app updater. Existing files were kept.'
+    }
+    $new[$manifestName] = (Get-FileHash -LiteralPath (Join-Path $Stage $manifestName) -Algorithm SHA256).Hash.ToLowerInvariant()
+    $entries = @()
+    foreach ($name in @(@($new.Keys) + @($old.Keys) | Sort-Object -Unique)) {
+        $dest = Get-SafeFile $Root $name
+        $before = if (Test-Path -LiteralPath $dest -PathType Leaf) { (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+        if (!$new.ContainsKey($name) -and (!$before -or $before -ne $old[$name])) { continue }
+        if ($new.ContainsKey($name) -and $before -and !$old.ContainsKey($name) -and $name -ne $manifestName) { throw "Refusing to overwrite an unowned file: $name" }
+        $entries += [pscustomobject]@{ Name = $name; Before = $before; After = $new[$name]; Backup = ('{0:D5}.bak' -f $entries.Count) }
+    }
+    $backup = Join-Path (Get-SafeRoot $BackupRoot) ('transaction-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $backup -Force | Out-Null
+    foreach ($e in $entries) { if ($e.Before) { Copy-Item -LiteralPath (Get-SafeFile $Root $e.Name) -Destination (Join-Path $backup $e.Backup) } }
+    [pscustomobject]@{ Application = 'SurfaceInsight'; Target = $Root; Token = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')); Entries = $entries } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $backup 'transaction.json') -Encoding UTF8
+    New-Item -ItemType Directory -Path $Root -Force | Out-Null
+    try {
+        foreach ($e in $entries) {
+            $dest = Get-SafeFile $Root $e.Name
+            $current = if (Test-Path -LiteralPath $dest -PathType Leaf) { (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+            if ($current -ne $e.Before) { throw "File changed during installation: $($e.Name)" }
+            if (!$e.After) { Remove-Item -LiteralPath $dest; continue }
+            $src = Get-SafeFile $Stage $e.Name
+            if ((Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne $e.After) { throw 'Staging changed during installation.' }
+            New-Item -ItemType Directory -Path (Split-Path $dest) -Force | Out-Null
+            $temp = $dest + '.si-' + [guid]::NewGuid().ToString('N') + '.tmp'
+            try {
+                Copy-Item -LiteralPath $src -Destination $temp
+                if ((Get-FileHash -LiteralPath $temp -Algorithm SHA256).Hash -ne $e.After) { throw 'Replacement verification failed.' }
+                Assert-NoLinks $dest
+                if (Test-Path -LiteralPath $dest) { [IO.File]::Replace($temp, $dest, [System.Management.Automation.Language.NullString]::Value) } else { [IO.File]::Move($temp, $dest) }
+            } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp } }
+        }
+        return $backup
+    } catch {
+        $failure = $_
+        Restore-Installation $Root $backup
+        throw "Installation failed; previous files restored. Recovery journal: $backup. $failure"
+    }
+}
+if ($FunctionsOnly) { return }
+if ($env:OS -ne 'Windows_NT') { throw 'Surface Insight supports Windows 11 only.' }
+$InstallDir = Get-SafeRoot $InstallDir
+$exe = Join-Path $InstallDir 'SurfaceInsight.exe'
+$dataDir = Join-Path $env:LOCALAPPDATA 'SurfaceInsight'
+$shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Surface Insight.lnk'
+$work = Join-Path $dataDir 'updates'
+Assert-NoLinks $work
+New-Item -ItemType Directory -Path $work -Force | Out-Null
+if ($Uninstall) {
+    $owned = Read-Inventory $InstallDir
+    Stop-Installation $InstallDir
+    foreach ($name in $owned.Keys) {
+        $p = Get-SafeFile $InstallDir $name
+        if ((Test-Path -LiteralPath $p -PathType Leaf) -and (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -eq $owned[$name]) { Remove-Item -LiteralPath $p }
+        elseif (Test-Path -LiteralPath $p) { Write-Warning "Kept modified file: $p" }
+    }
+    Remove-Item -LiteralPath (Join-Path $InstallDir $manifestName)
+    if (Test-Path -LiteralPath $shortcut) {
+        $s = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+        if ($s.TargetPath -eq $exe) { Remove-Item -LiteralPath $shortcut }
+    }
+    $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    $run = (Get-ItemProperty -Path $runKey -Name SurfaceInsight -ErrorAction SilentlyContinue).SurfaceInsight
+    if ($run -and $run.Contains($exe)) { Remove-ItemProperty -Path $runKey -Name SurfaceInsight }
+    if ($RemoveData -and (Test-Path -LiteralPath $dataDir)) {
+        Assert-NoLinksTree $dataDir
+        if ($Force -or (Read-Host 'Permanently delete ALL Surface Insight history and diagnostic captures? (y/n)') -match '^[Yy]$') { Remove-Item -LiteralPath $dataDir -Recurse -Force }
+    }
+    Write-Host 'Owned unmodified application files removed. Unknown files and history were kept unless explicitly deleted.'
+    return
+}
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+$arch = Get-NativeArchitecture
+$tmp = Join-Path $work ('download-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmp | Out-Null
+$oldProgress = $ProgressPreference
+$ProgressPreference = 'SilentlyContinue'
+$backup = $null
+try {
+    $api = if ($Tag) { "https://api.github.com/repos/$Repo/releases/tags/$([Uri]::EscapeDataString($Tag))" } else { "https://api.github.com/repos/$Repo/releases/latest" }
+    $release = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'SurfaceInsight-installer' } -UseBasicParsing
+    $asset = @($release.assets | Where-Object { $_.name -match "^SurfaceInsight-(.+-)?win-$arch\.zip$" })
+    $sums = @($release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' })
+    if ($asset.Count -ne 1 -or $sums.Count -ne 1) { throw 'Release must contain one matching ZIP and SHA256SUMS.txt. Nothing was installed.' }
+    $text = (Invoke-WebRequest -Uri $sums[0].browser_download_url -UseBasicParsing).Content
+    if ($text -is [byte[]]) { $text = [Text.Encoding]::ASCII.GetString($text) }
+    $want = Get-RequiredChecksum $text $asset[0].name
+    $zip = Join-Path $tmp 'package.zip'
+    Invoke-WebRequest -Uri $asset[0].browser_download_url -OutFile $zip -UseBasicParsing
+    if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $want) { throw 'Checksum mismatch. Nothing was installed.' }
+    $stage = Join-Path $tmp 'package'
+    Expand-Archive -LiteralPath $zip -DestinationPath $stage
+    Read-Inventory $stage -Verify | Out-Null
+    if ((Test-Path -LiteralPath $InstallDir) -and @(Get-ChildItem -LiteralPath $InstallDir -Force).Count -and !(Test-Path -LiteralPath (Join-Path $InstallDir $manifestName))) {
+        throw 'This legacy destination has no file inventory. Use a new empty dedicated folder; the running old copy and its files were kept.'
+    }
+    Stop-Installation $InstallDir
+    $backup = Install-Inventory $InstallDir $stage $work
+    # This also exercises SQLite, bundled native libraries and update recovery helpers before launch.
+    $test = Start-Process -FilePath $exe -ArgumentList '--self-test','--ci' -PassThru
+    if (!$test.WaitForExit(120000)) { $test.Kill(); throw 'Installed self-test timed out. Recovery backup retained.' }
+    if ($test.ExitCode -ne 0) { throw 'Installed self-test failed. Recovery backup retained.' }
+    $inventory = Read-Inventory $InstallDir
+    foreach ($name in $inventory.Keys) { Unblock-File -LiteralPath (Get-SafeFile $InstallDir $name) }
+    $s = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+    $s.TargetPath = $exe; $s.WorkingDirectory = $InstallDir; $s.IconLocation = "$exe,0"; $s.Save()
+    $journal = Get-Content -LiteralPath (Join-Path $backup 'transaction.json') -Raw | ConvertFrom-Json
+    $health = Join-Path $backup 'healthy'
+    $app = Start-Process -FilePath $exe -WorkingDirectory $InstallDir -ArgumentList @('--update-health', ('"' + $health + '"'), $journal.Token) -PassThru
+    $deadline = (Get-Date).AddSeconds(90)
+    $healthy = $false
+    do {
+        if ((Test-Path -LiteralPath $health) -and (Get-Content -LiteralPath $health -Raw) -eq $journal.Token) { $healthy = $true; break }
+        if ($app.HasExited) { break }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+    if (!$healthy) { throw 'The dashboard and collector did not acknowledge a healthy startup.' }
+    try { Complete-Installation $backup } catch { Write-Warning "Installation is healthy; backup cleanup needs attention: $($_.Exception.Message)" }
+    $backup = $null
+    Write-Host "Installed $($release.tag_name). Your history and unknown files were kept."
+} catch {
+    $failure = $_
+    if ($backup) {
+        try {
+            Stop-Installation $InstallDir
+            Restore-Installation $InstallDir $backup
+            if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe -WorkingDirectory $InstallDir }
+        } catch { throw "Recovery needs attention: $($_.Exception.Message). Keep the journal/backups at $backup. Original failure: $failure" }
+    }
+    throw "Installation could not complete: $failure. Existing history was kept. Recovery backup: $backup. Manual downloads: https://github.com/$Repo/releases"
+} finally {
+    $ProgressPreference = $oldProgress
+    # This unique temporary directory was created by this invocation, not derived from an install destination.
+    if (Test-Path -LiteralPath $tmp) { Assert-NoLinksTree $tmp; Remove-Item -LiteralPath $tmp -Recurse -Force }
 }

@@ -88,7 +88,12 @@ public sealed partial class MainWindow
         try
         {
             var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true, Verb = "runas" }; psi.ArgumentList.Add("--diagnose"); psi.ArgumentList.Add(history.Folder); using var proc = Process.Start(psi);
-            Toast("Diagnostic capture running · up to 60 seconds plus report generation."); using var reg = capture.Token.Register(() => File.WriteAllText(cancel, "cancel")); if (proc != null) await proc.WaitForExitAsync();
+            Toast("Diagnostic capture running · up to 60 seconds plus report generation."); using var reg = capture.Token.Register(() => File.WriteAllText(cancel, "cancel")); if (proc != null)
+            {
+                await proc.WaitForExitAsync();
+                if (proc.ExitCode == 6) throw new InvalidOperationException("Diagnostics requires administrator consent from the same Windows account and the default data folder.");
+                if (proc.ExitCode != 0) throw new InvalidOperationException("The diagnostic helper failed. Check the reports folder.");
+            }
             Toast("Diagnostics finished. See the summary below and the reports folder.");
         }
         catch (Exception ex) { Toast("Diagnostics could not start: " + ex.Message); }

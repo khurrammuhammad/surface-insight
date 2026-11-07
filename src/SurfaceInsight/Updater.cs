@@ -19,13 +19,14 @@ public sealed record CheckResult(bool Ok, UpdateInfo? Update, string Message);
 public static class Updater
 {
     public const string Repo = "khurrammuhammad/surface-insight";
-    public const string QuitEvent = "Local\\SurfaceInsightQuit";
+    public static string QuitEvent => InstallFiles.Signal("Quit");
     public static string StateFile => Path.Combine(MonitorHost.Folder, "update.json");
     public static string AutoFlag => Path.Combine(MonitorHost.Folder, "update.auto");
     public static string ResultFile => Path.Combine(MonitorHost.Folder, "update.result");
     public static string LogFile => Path.Combine(MonitorHost.Folder, "update.log");
     public static string OpenSettingsFlag => Path.Combine(MonitorHost.Folder, "open.settings");
     static string WorkDir => Path.Combine(MonitorHost.Folder, "updates");
+    public sealed record DownloadRecord(string Application, string Target, Dictionary<string, string> Files, bool Completed);
     public static CheckResult? Last;
 
     public static bool AutoEnabled => File.Exists(AutoFlag);
@@ -51,14 +52,26 @@ public static class Updater
     public static (string Name, string Url)? PickAsset(IEnumerable<(string Name, string Url)> assets, string arch, bool singleFile)
     {
         string ext = singleFile ? "exe" : "zip"; var rx = new System.Text.RegularExpressions.Regex("^SurfaceInsight-(.+-)?win-" + arch + "\\." + ext + "$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        foreach (var a in assets) if (rx.IsMatch(a.Name)) return a; return null;
+        var matches = assets.Where(a => rx.IsMatch(a.Name)).ToArray();
+        return matches.Length == 1 ? matches[0] : null;
     }
 
     /// <summary>Reads a sha256sum-style file ("hash  name") and returns the lower-case hash for the named file.</summary>
     public static string? ParseSums(string text, string file)
     {
-        foreach (var raw in text.Split('\n')) { var line = raw.Trim(); int i = line.IndexOfAny(new[] { ' ', '\t' }); if (i < 64) continue; var name = line[i..].Trim().TrimStart('*'); if (string.Equals(name, file, StringComparison.OrdinalIgnoreCase) && line[..i].Length == 64) return line[..i].ToLowerInvariant(); }
-        return null;
+        string? result = null;
+        foreach (var raw in text.Split('\n'))
+        {
+            var line = raw.Trim();
+            int i = line.IndexOfAny(new[] { ' ', '\t' });
+            if (i < 0) continue;
+            var name = line[i..].Trim().TrimStart('*');
+            if (!name.Equals(file, StringComparison.OrdinalIgnoreCase)) continue;
+            var hash = line[..i];
+            if (result != null || hash.Length != 64 || !hash.All(Uri.IsHexDigit)) return null;
+            result = hash.ToLowerInvariant();
+        }
+        return result;
     }
     public static string Sha256(string path) { using var s = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(s)).ToLowerInvariant(); }
 
@@ -76,11 +89,13 @@ public static class Updater
     {
         why = ""; try
         {
+            installDir = InstallFiles.Root(installDir);
+            if (!IsSingleFile(installDir)) InstallFiles.Read(installDir, false);
             var parent = Path.GetDirectoryName(installDir.TrimEnd('\\', '/')); if (string.IsNullOrEmpty(parent)) { why = "The app is at the root of a drive."; return false; }
             var probe = Path.Combine(parent, ".si-write-test-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(probe); Directory.Delete(probe);
             var f = Path.Combine(installDir, ".si-write-test-" + Guid.NewGuid().ToString("N")); File.WriteAllText(f, ""); File.Delete(f); return true;
         }
-        catch { why = "This folder needs administrator rights to change."; return false; }
+        catch (Exception ex) { why = "This folder cannot be safely updated in place: " + ex.Message + " Install into a new dedicated folder instead."; return false; }
     }
 
     // ------------------------------------------------------------------ network
@@ -140,9 +155,12 @@ public static class Updater
     /// <summary>Downloads the release file, verifies its checksum, and for zip installs extracts and checks it. Returns what <see cref="StartApply"/> needs.</summary>
     public static async Task<(string Applier, string Staging, bool SingleFile)> PrepareAsync(UpdateInfo u, IProgress<string>? progress, CancellationToken ct = default)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromMinutes(15));
+        ct = deadline.Token;
         if (u.SumsUrl == null) throw new InvalidOperationException("This release has no SHA256SUMS.txt, so the download can't be verified. Download it from the release page instead.");
         string arch = NativeArch(RuntimeInformation.OSArchitecture) ?? throw new InvalidOperationException("Unsupported processor."); bool single = IsSingleFile(InstallDir);
-        string dir = Path.Combine(WorkDir, u.Version.ToString()); if (Directory.Exists(dir)) Directory.Delete(dir, true); Directory.CreateDirectory(dir);
+        string dir = Path.Combine(InstallFiles.Root(WorkDir), "download-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(dir);
         string file = Path.Combine(dir, Path.GetFileName(u.AssetName));
         using (var http = NewClient(Timeout.InfiniteTimeSpan))
         {
@@ -157,8 +175,12 @@ public static class Updater
         {
             progress?.Report("Unpacking…"); staging = Path.Combine(dir, "pkg"); await Task.Run(() => ZipFile.ExtractToDirectory(file, staging), ct); applier = Path.Combine(staging, "SurfaceInsight.exe");
         }
+        if (!single) InstallFiles.Read(staging, true);
         if (!File.Exists(applier)) throw new InvalidOperationException("The package doesn't contain SurfaceInsight.exe. Nothing was changed.");
         if (PeMachine(applier) != MachineFor(arch)) throw new InvalidOperationException("The package is not built for this PC's processor. Nothing was changed.");
+        var owned = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
+            .ToDictionary(p => Path.GetRelativePath(dir, p).Replace('\\', '/'), InstallFiles.Hash);
+        File.WriteAllText(Path.Combine(dir, "download.json"), JsonSerializer.Serialize(new DownloadRecord(InstallFiles.Application, InstallDir, owned, false)));
         return (applier, staging, single);
     }
 
@@ -167,82 +189,187 @@ public static class Updater
     {
         var psi = new ProcessStartInfo(p.Applier) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(p.Applier)! };
         psi.ArgumentList.Add("--apply-update"); psi.ArgumentList.Add(InstallDir); psi.ArgumentList.Add(p.Staging); psi.ArgumentList.Add(p.SingleFile ? "1" : "0");
+        psi.ArgumentList.Add(Path.GetFileName(Environment.ProcessPath) ?? "SurfaceInsight.exe");
         Process.Start(psi)?.Dispose();
     }
 
     // ------------------------------------------------------------------ apply (runs in the new build, no UI)
     static void Log(string text) { try { Directory.CreateDirectory(MonitorHost.Folder); File.AppendAllText(LogFile, DateTime.Now.ToString("s") + "  " + text + Environment.NewLine); } catch { } }
 
-    static List<Process> Others(string installDir)
+    static List<Process> Others(string installDir, string executableName)
     {
-        var l = new List<Process>(); string root = Path.GetFullPath(installDir).TrimEnd('\\') + "\\";
-        foreach (var p in Process.GetProcessesByName("SurfaceInsight")) { try { if (p.Id != Environment.ProcessId && p.MainModule?.FileName is string f && Path.GetFullPath(f).StartsWith(root, StringComparison.OrdinalIgnoreCase)) { l.Add(p); continue; } } catch { } p.Dispose(); }
+        var l = new List<Process>(); string root = Path.GetFullPath(installDir).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+        foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(executableName))) { try { if (p.Id != Environment.ProcessId && p.MainModule?.FileName is string f && Path.GetFullPath(f).StartsWith(root, StringComparison.OrdinalIgnoreCase)) { l.Add(p); continue; } } catch { } p.Dispose(); }
         return l;
     }
-    static void StopOld(string installDir)
+    static void StopOld(string installDir, string executableName)
     {
-        try { using var quit = new EventWaitHandle(false, EventResetMode.AutoReset, QuitEvent); quit.Set(); } catch { }
+        try { using var quit = new EventWaitHandle(false, EventResetMode.AutoReset, InstallFiles.Signal("Quit", installDir)); quit.Set(); } catch { }
         var end = DateTime.UtcNow.AddSeconds(20); List<Process> o;
-        while ((o = Others(installDir)).Count > 0 && DateTime.UtcNow < end) { foreach (var p in o) p.Dispose(); Thread.Sleep(300); }
+        while ((o = Others(installDir, executableName)).Count > 0 && DateTime.UtcNow < end) { foreach (var p in o) p.Dispose(); Thread.Sleep(300); }
         foreach (var p in o) { try { p.Kill(); p.WaitForExit(5000); } catch { } p.Dispose(); }
     }
-    static T Retry<T>(Func<T> f) { Exception? last = null; for (int i = 0; i < 12; i++) { try { return f(); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { last = ex; Thread.Sleep(500); } } throw last!; }
-    static void CopyDir(string from, string to) { Directory.CreateDirectory(to); foreach (var f in Directory.GetFiles(from)) File.Copy(f, Path.Combine(to, Path.GetFileName(f)), true); foreach (var d in Directory.GetDirectories(from)) CopyDir(d, Path.Combine(to, Path.GetFileName(d))); }
-
-    /// <summary>
-    /// Replaces the install with the staged build and restores the old one if anything fails. With <paramref name="start"/> it also stops the
-    /// running app first and starts the new (or restored) one afterwards. Returns null on success, otherwise the reason.
-    /// </summary>
-    public static string? Apply(string installDir, string staging, bool singleFile, bool start)
+    /// <summary>Replaces only inventoried files. A failed startup restores the previous files.</summary>
+    public static string? Apply(string installDir, string staging, bool singleFile, bool start, Func<string, bool>? healthCheck = null, string? workRoot = null, string executableName = "SurfaceInsight.exe")
     {
-        installDir = installDir.TrimEnd('\\', '/'); string exe = Path.Combine(installDir, "SurfaceInsight.exe"), old = installDir + ".old", oldExe = exe + ".old"; string? error = null;
+        UpdateTransaction? transaction = null;
+        string? error = null;
+        string exe = InstallFiles.In(InstallFiles.Root(installDir), singleFile ? executableName : "SurfaceInsight.exe");
         try
         {
-            if (start) StopOld(installDir);
-            if (singleFile)
+            transaction = UpdateTransaction.Prepare(installDir, staging, singleFile, workRoot ?? WorkDir, executableName);
+            if (start) StopOld(installDir, executableName);
+            transaction.Install(staging, singleFile);
+            if (healthCheck != null && !healthCheck(exe)) throw new IOException("The replacement failed its startup check.");
+            if (start)
             {
-                if (File.Exists(oldExe)) File.Delete(oldExe);
-                Retry(() => { File.Move(exe, oldExe); return 0; });
-                try { File.Copy(staging, exe, true); } catch { try { File.Delete(exe); } catch { } File.Move(oldExe, exe, true); throw; }
+                var psi = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = installDir };
+                psi.ArgumentList.Add("--update-health");
+                psi.ArgumentList.Add(transaction.HealthFile);
+                psi.ArgumentList.Add(transaction.State.Token);
+                using var child = Process.Start(psi) ?? throw new IOException("The replacement could not start.");
+                var deadline = DateTime.UtcNow.AddSeconds(90);
+                bool healthy = false;
+                while (DateTime.UtcNow < deadline)
+                {
+                    if (File.Exists(transaction.HealthFile) && File.ReadAllText(transaction.HealthFile) == transaction.State.Token) { healthy = true; break; }
+                    if (child.HasExited) break;
+                    Thread.Sleep(250);
+                }
+                if (!healthy)
+                {
+                    StopOld(installDir, executableName);
+                    throw new IOException("The replacement did not acknowledge a healthy dashboard and collector within 90 seconds.");
+                }
             }
-            else
+            // Backups are not removed until the new version acknowledges startup.
+            try { transaction.Complete(); } catch (Exception cleanup) { Log("Update is healthy; backup cleanup pending: " + cleanup.Message); }
+            if (start) MarkDownloadComplete(staging, singleFile, installDir);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            if (transaction != null)
             {
-                if (Directory.Exists(old)) Directory.Delete(old, true);
-                Retry(() => { Directory.Move(installDir, old); return 0; });
-                try { CopyDir(staging, installDir); if (!File.Exists(exe)) throw new FileNotFoundException("SurfaceInsight.exe missing after copy"); }
-                catch { try { if (Directory.Exists(installDir)) Directory.Delete(installDir, true); } catch { } Directory.Move(old, installDir); throw; }
+                try { transaction.Rollback(); transaction.Complete(); }
+                catch (Exception recovery) { error += " Recovery needs attention: " + recovery.Message + ". Backups/journal retained at " + transaction.Folder; }
+            }
+            if (start)
+            {
+                try { Process.Start(new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = installDir })?.Dispose(); }
+                catch (Exception restart) { error += " Could not restart: " + restart.Message; }
             }
         }
-        catch (Exception ex) { error = ex is IOException or UnauthorizedAccessException ? "Windows wouldn't let the files be replaced (" + ex.Message + "). Close anything using the Surface Insight folder and try again." : ex.Message; }
-        string version = ""; try { version = FileVersionInfo.GetVersionInfo(exe).ProductVersion?.Split('+')[0] ?? ""; } catch { }
         if (start)
         {
-            try { File.WriteAllText(ResultFile, error == null ? "ok|" + version : "fail|" + error); } catch { }
-            Log(error == null ? "Updated to " + version : "Update failed, previous version restored: " + error);
-            try { if (File.Exists(exe)) Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = installDir })?.Dispose(); } catch (Exception ex) { Log("Could not start Surface Insight: " + ex.Message); }
-            if (error != null) { try { System.Windows.Forms.MessageBox.Show("Surface Insight could not be updated, so the previous version was restored.\n\n" + error, "Surface Insight update", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Warning); } catch { } }
+            try
+            {
+                Directory.CreateDirectory(MonitorHost.Folder);
+                string version = File.Exists(exe) ? FileVersionInfo.GetVersionInfo(exe).ProductVersion?.Split('+')[0] ?? "" : "";
+                File.WriteAllText(ResultFile, error == null ? "ok|" + version : "fail|" + error);
+                Log(error == null ? "Updated and startup confirmed: " + version : "Update failed: " + error);
+            }
+            catch (Exception reporting) { Log("Update result could not be written: " + reporting.Message + "; " + error); }
         }
         return error;
+    }
+
+    static string? startupHealthFile, startupToken;
+    static DateTime startupAt;
+    public static void SetStartupHealth(string[] args)
+    {
+        if (args.Length != 3 || args[0] != "--update-health") return;
+        string path = Path.GetFullPath(args[1]);
+        string work = InstallFiles.Root(WorkDir) + Path.DirectorySeparatorChar;
+        if (!path.StartsWith(work, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal) ||
+            Path.GetFileName(path) != "healthy" || args[2].Length != 64 || !args[2].All(Uri.IsHexDigit))
+            throw new IOException("Invalid update health acknowledgement.");
+        InstallFiles.NoLinks(path);
+        var journal = JsonSerializer.Deserialize<UpdateTransaction.Journal>(File.ReadAllText(Path.Combine(Path.GetDirectoryName(path)!, "transaction.json")));
+        if (journal?.Application != InstallFiles.Application || journal.Token != args[2] ||
+            !InstallFiles.PathComparer.Equals(InstallFiles.Root(journal.Target), InstallFiles.Root(InstallDir)))
+            throw new IOException("The update transaction does not belong to this installation.");
+        startupHealthFile = path; startupToken = args[2]; startupAt = DateTime.UtcNow;
+    }
+
+    public static void ConfirmStartup(bool dashboardLoaded)
+    {
+        if (!dashboardLoaded || startupHealthFile == null) return;
+        try
+        {
+            // A rendered dashboard alone is insufficient: the collector must also have written a fresh sample.
+            var line = File.ReadLines(MonitorHost.StatusFile).FirstOrDefault(x => x.StartsWith("ok="));
+            if (line == null || !DateTime.TryParse(line[3..], null, System.Globalization.DateTimeStyles.RoundtripKind, out var at) || at.ToUniversalTime() < startupAt) return;
+            InstallFiles.NoLinks(startupHealthFile);
+            File.WriteAllText(startupHealthFile, startupToken);
+            startupHealthFile = startupToken = null;
+        }
+        catch (Exception ex) { Log("Startup acknowledgement pending: " + ex.Message); }
     }
 
     /// <summary>One line for the dashboard to show after an update attempt, or null. Reading it clears it.</summary>
     public static string? TakeResult()
     {
-        try { if (!File.Exists(ResultFile)) return null; var t = File.ReadAllText(ResultFile).Trim(); File.Delete(ResultFile); var p = t.Split('|', 2); if (p[0] == "ok") return "Updated to version " + p[1] + "."; if (p[0] == "fail" && p.Length > 1) return "Update failed; the previous version was restored. " + p[1]; } catch { }
+        try { if (!File.Exists(ResultFile)) return null; var t = File.ReadAllText(ResultFile).Trim(); File.Delete(ResultFile); var p = t.Split('|', 2); if (p[0] == "ok") return "Updated to version " + p[1] + "."; if (p[0] == "fail" && p.Length > 1) return "Update failed: " + p[1]; } catch { }
         return null;
     }
 
-    /// <summary>Deletes leftovers of earlier updates (the previous install and downloads). Failures are ignored; it runs again next start.</summary>
-    public static void Cleanup()
+    static void MarkDownloadComplete(string staging, bool single, string target)
     {
         try
         {
-            string dir = InstallDir.TrimEnd('\\', '/'); try { if (Directory.Exists(dir + ".old")) Directory.Delete(dir + ".old", true); } catch { } try { File.Delete(Path.Combine(dir, "SurfaceInsight.exe.old")); } catch { }
-            try { if (Directory.Exists(WorkDir)) Directory.Delete(WorkDir, true); } catch { }
+            string folder = single ? Path.GetDirectoryName(staging)! : Path.GetDirectoryName(InstallFiles.Root(staging))!;
+            string path = InstallFiles.In(InstallFiles.Root(folder), "download.json");
+            if (!File.Exists(path)) return; // Downloads prepared by 1.1.0 have no ownership record.
+            var record = JsonSerializer.Deserialize<DownloadRecord>(File.ReadAllText(path));
+            if (record?.Application != InstallFiles.Application || !InstallFiles.PathComparer.Equals(InstallFiles.Root(record.Target), InstallFiles.Root(target))) return;
+            File.WriteAllText(path, JsonSerializer.Serialize(record with { Completed = true }));
         }
-        catch { }
+        catch (Exception ex) { Log("Download cleanup remains pending: " + ex.Message); }
+    }
+
+    /// <summary>Only completed, inventoried downloads for this installation are eligible. No recursive deletion.</summary>
+    public static void Cleanup() => CleanupDownloads(WorkDir, InstallDir);
+    public static void CleanupDownloads(string work, string target)
+    {
+        try
+        {
+            work = InstallFiles.Root(work);
+            if (!Directory.Exists(work)) return;
+            foreach (string folder in Directory.EnumerateDirectories(work, "download-*"))
+            {
+                try
+                {
+                    InstallFiles.NoLinks(folder);
+                    string recordPath = InstallFiles.In(folder, "download.json");
+                    if (!File.Exists(recordPath)) continue;
+                    var record = JsonSerializer.Deserialize<DownloadRecord>(File.ReadAllText(recordPath));
+                    if (record?.Application != InstallFiles.Application || !record.Completed || record.Files == null || record.Files.Count > 10_000 ||
+                        !InstallFiles.PathComparer.Equals(InstallFiles.Root(record.Target), InstallFiles.Root(target))) continue;
+                    // Validate the entire record before any deletion. Preserve changed files and every unknown file.
+                    var paths = record.Files.Select(e => (Path: InstallFiles.In(folder, e.Key), Hash: e.Value)).ToList();
+                    if (paths.Any(e => e.Path == recordPath || e.Hash.Length != 64 || !e.Hash.All(Uri.IsHexDigit))) continue;
+                    foreach (var e in paths)
+                        if (File.Exists(e.Path) && InstallFiles.Hash(e.Path).Equals(e.Hash, StringComparison.OrdinalIgnoreCase)) File.Delete(e.Path);
+                    var directories = paths.SelectMany(e => ParentsWithin(Path.GetDirectoryName(e.Path)!, folder)).Distinct().OrderByDescending(p => p.Length);
+                    foreach (string dir in directories)
+                        if (Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir);
+                    if (!Directory.EnumerateFileSystemEntries(folder).Any(p => p != recordPath))
+                    {
+                        File.Delete(recordPath);
+                        Directory.Delete(folder);
+                    }
+                }
+                catch (Exception ex) { Log("Owned download cleanup deferred: " + ex.Message); }
+            }
+        }
+        catch (Exception ex) { Log("Download cleanup unavailable: " + ex.Message); }
+    }
+    static IEnumerable<string> ParentsWithin(string path, string root)
+    {
+        for (string? p = path; p != null && p.Length > root.Length; p = Path.GetDirectoryName(p)) yield return p;
     }
 
     /// <summary>Entry point for "SurfaceInsight.exe --apply-update installDir staging singleFile".</summary>
-    public static void RunApplyMode(string[] args) { if (args.Length >= 4) Apply(args[1], args[2], args[3] == "1", start: true); }
+    public static void RunApplyMode(string[] args) { if (args.Length >= 4) Environment.ExitCode = Apply(args[1], args[2], args[3] == "1", start: true, executableName: args.Length >= 5 ? args[4] : "SurfaceInsight.exe") == null ? 0 : 1; }
 }

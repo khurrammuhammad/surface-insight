@@ -21,4 +21,11 @@ Surface Insight runs as your user and stores history locally. It contacts the ne
 
 ## Verifying downloads
 
-Each release publishes `SHA256SUMS.txt`, and the installer checks it automatically. Builds are not yet code-signed.
+Each release publishes `SHA256SUMS.txt`, and the installer checks it automatically. Public 1.1.0 builds were unsigned. The 1.1.1 release pipeline requires timestamped verified signatures and creates only a draft; signing credentials and exact-commit Windows acceptance must be provisioned before publication. Development CI artifacts are unsigned.
+
+
+## Ownership and recovery boundaries
+
+Inventory-based updates replace only app-owned paths, reject reparse/link traversal and keep recovery backups until startup is acknowledged. Unknown files, modified obsolete files and pre-existing `.old` directories are not automatically removed. Legacy ZIP installs without an inventory must migrate to a new dedicated folder. Local history/captures are not encrypted by the app and clearing data is not secure forensic erasure.
+
+Enhanced monitoring and diagnostics require administrator consent from the **same Windows account**. Different-account elevation is deliberately refused; basic monitoring remains available. Private-reporting enablement, protected release approvals and signing credentials must be verified in repository settings by a maintainer; a markdown policy cannot enable them.

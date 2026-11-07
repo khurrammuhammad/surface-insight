@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using Forms = System.Windows.Forms;
 namespace SurfaceInsight;
 
@@ -20,7 +20,7 @@ public sealed class MonitorHost : Forms.ApplicationContext
     public static string ErrorLog => Path.Combine(Folder, "collector-error.txt");
     public static void EnsureRunning()
     {
-        using var mutex = new Mutex(false, "Local\\SurfaceInsightHost"); bool owned = false; try { owned = mutex.WaitOne(0); } catch (AbandonedMutexException) { owned = true; }
+        using var mutex = new Mutex(false, InstallFiles.Signal("Host")); bool owned = false; try { owned = mutex.WaitOne(0); } catch (AbandonedMutexException) { owned = true; }
         if (!owned) return; mutex.ReleaseMutex();
         Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--host") { UseShellExecute = false, CreateNoWindow = true });
     }
@@ -38,6 +38,7 @@ public sealed class MonitorHost : Forms.ApplicationContext
     /// <summary>The daily update check, only when the user turned it on. It never downloads or installs; it shows at most one notification per new version.</summary>
     async Task UpdateTick()
     {
+        await Task.Run(Updater.Cleanup);
         if (updBusy || suspended || !Updater.AutoEnabled) return; if (Updater.ReadState().Checked is DateTime at && (DateTime.UtcNow - at).TotalHours < 24) return;
         updBusy = true;
         try { var r = await Updater.CheckAsync(); if (r.Update is UpdateInfo u && Updater.ReadState().Notified != u.Tag) { Updater.MarkNotified(u.Tag); tray.ShowBalloonTip(10000, "Surface Insight update available", "Version " + u.Version + " is available. Click to review it.", Forms.ToolTipIcon.Info); } }

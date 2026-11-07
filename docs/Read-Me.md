@@ -60,3 +60,16 @@ For the smoke checks:
     SurfaceInsight.exe --self-test
 
 That command writes a pass/fail checklist to `self-test.txt` beside the executable (add `--ci` on a PC without a battery). Dependencies restore through NuGet. The source uses WPF, WinForms tray integration, Microsoft.Data.Sqlite, System.Management and performance counters.
+
+
+## Changes in 1.1.1: safe install, update and access
+
+Use the per-release signed installer after checking its publisher, or extract a ZIP into a new dedicated folder. Every new ZIP contains `surface-insight.files.json`; never hand-edit this inventory. The installer refuses missing/duplicate/invalid checksums. File-level updates preserve files outside the inventory, verify staging again before replacement, and retain a recovery journal until the new dashboard and collector confirm startup. Uninstall retains unknown or modified files. A cleanup failure is reported without undoing a healthy update.
+
+For a 1.1.0 or older ZIP installation, quit the old tray monitor and use a new empty application folder for 1.1.1. The shared history/settings folder under LocalAppData stays in place. Do not launch old and new versions simultaneously or delete a pre-existing `.old` directory. Portable single-file updates touch only their own executable. See [Release and recovery checklist](Release-Checklist.md) for manual recovery after interruption.
+
+Administrator consent must use the same Windows account for enhanced network monitoring and Investigate. Supplying another account's administrator credentials is unsupported and explicitly rejected. Basic monitoring remains available. The elevated diagnostic helper resolves Windows tools from the system directory rather than the working directory.
+
+Keyboard chart access: Tab to a chart, use Left/Right or Home/End to inspect values, hold Shift to select an interval and press Enter to zoom; Escape cancels selection. Narrator/automation can read the selected timestamp and series values. Native Windows accessibility and scaling acceptance remains part of release testing.
+
+Network loss/overflow notes identify incomplete intervals; transport bytes are not a complete billing/accounting measure. Starting enhanced monitoring never stops another live session by a shared name prefix. Diagnostic captures remain on disk when routine history is cleared, and may contain sensitive system/process information. Review before sharing and remove unwanted captures explicitly. Measure monitor overhead on your device; no universal battery/CPU cost is promised.

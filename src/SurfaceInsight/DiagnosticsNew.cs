@@ -6,7 +6,9 @@ public static class Diagnostics
 {
     internal static (int Code, string Output) Exec(string file, string arguments, int timeout = 120000)
     {
-        using var p = Process.Start(new ProcessStartInfo(file, arguments) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true })!;
+        if (file is "wpr.exe" or "powercfg.exe") file = Path.Combine(Environment.SystemDirectory, file);
+        if (!Path.IsPathFullyQualified(file)) throw new IOException("Diagnostics requires an absolute executable path.");
+        using var p = Process.Start(new ProcessStartInfo(file, arguments) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Environment.SystemDirectory, RedirectStandardOutput = true, RedirectStandardError = true })!;
         var output = p.StandardOutput.ReadToEndAsync(); var error = p.StandardError.ReadToEndAsync();
         if (!p.WaitForExit(timeout)) { p.Kill(true); return (-1, "Timed out"); }
         return (p.ExitCode, output.GetAwaiter().GetResult() + error.GetAwaiter().GetResult());
@@ -16,10 +18,11 @@ public static class Diagnostics
     {
         if (args.Length != 2) return;
         string expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SurfaceInsight");
-        if (!string.Equals(Path.GetFullPath(args[1]), expected, StringComparison.OrdinalIgnoreCase)) return;
+        if (!string.Equals(Path.GetFullPath(args[1]), expected, StringComparison.OrdinalIgnoreCase)) { Environment.ExitCode = 6; return; }
+        InstallFiles.NoLinks(expected);
         Directory.CreateDirectory(expected);
-        using var mutex = new Mutex(true, "Local\\SurfaceInsightDiagnostics", out bool first); if (!first) return;
-        string folder = Path.Combine(expected, "Capture-" + DateTime.Now.ToString("yyyyMMdd-HHmmss")); Directory.CreateDirectory(folder);
+        using var mutex = new Mutex(true, InstallFiles.Signal("Diagnostics"), out bool first); if (!first) return;
+        string folder = Path.Combine(expected, "Capture-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..8]); Directory.CreateDirectory(folder);
         string instance = "SurfaceInsight-" + Guid.NewGuid().ToString("N");
         string cancel = Path.Combine(expected, "cancel.capture");
         var summary = new List<string>(); bool owns = false;
@@ -53,11 +56,11 @@ public static class Diagnostics
             }
             if (File.Exists(Path.Combine(folder, "battery.xml"))) summary.Add(DeepAnalysis.Battery(Path.Combine(folder, "battery.xml")));
             if (File.Exists(Path.Combine(folder, "sleep.xml"))) summary.Add(DeepAnalysis.Sleep(Path.Combine(folder, "sleep.xml")));
-            if(File.Exists(Path.Combine(folder,"activity.etl"))&&!File.Exists(cancel))
+            if (File.Exists(Path.Combine(folder, "activity.etl")) && !File.Exists(cancel))
             {
-                string analysis=Path.Combine(folder,"trace-summary.txt");char q=(char)34;
-                var parsed=Exec(Environment.ProcessPath!,"--analyze "+q+Path.Combine(folder,"activity.etl")+q+" "+q+analysis+q,180000);
-                summary.Add(File.Exists(analysis)?File.ReadAllText(analysis):"Trace analysis did not complete within three minutes; raw trace retained. "+parsed.Output);
+                string analysis = Path.Combine(folder, "trace-summary.txt"); char q = (char)34;
+                var parsed = Exec(Environment.ProcessPath!, "--analyze " + q + Path.Combine(folder, "activity.etl") + q + " " + q + analysis + q, 180000);
+                summary.Add(File.Exists(analysis) ? File.ReadAllText(analysis) : "Trace analysis did not complete within three minutes; raw trace retained. " + parsed.Output);
             }
         }
         catch (Exception ex) { summary.Add("Diagnostics failed: " + ex.Message); }

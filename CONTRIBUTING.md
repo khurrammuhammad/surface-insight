@@ -41,3 +41,9 @@ Maintainers bump `<Version>` in `src/SurfaceInsight/SurfaceInsight.csproj` and p
 ## License
 
 By contributing you agree that your contribution is licensed under the [MIT License](LICENSE).
+
+## Launch-safety regression checks
+
+Run `dotnet run --project tests/CoreTests/CoreTests.csproj -c Release` and `pwsh -NoProfile -File scripts/test-install.ps1`. These execute the production file-replacement/protocol code in disposable folders without starting the application, requesting elevation or touching installed copies. Windows CI also runs the native application self-tests on both architectures.
+
+Keep lifecycle code readable: separate validation, mutation, rollback and cleanup; avoid silent catches around critical failures. Add a failure regression when changing file ownership, elevation, backpressure or startup recovery. Follow [Release checklist](docs/Release-Checklist.md) before publishing a new version.

@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -16,7 +16,7 @@ public sealed partial class MainWindow : Window
 {
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
-    readonly History history = new(); readonly EventWaitHandle showSignal = new(false, EventResetMode.AutoReset, "Local\\SurfaceInsightShow");
+    readonly History history = new(); readonly EventWaitHandle showSignal = new(false, EventResetMode.AutoReset, InstallFiles.Signal("Show"));
     readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(5) }; readonly ChartGroup group = new();
     readonly HashSet<string> layers = new(StringComparer.OrdinalIgnoreCase);
     RangeData? data; Sample? latest; List<Sample> recent = new(); DateTime? lastSampleTime; DateTime lastFullLoad;
@@ -140,7 +140,7 @@ public sealed partial class MainWindow : Window
             if (File.Exists(Updater.OpenSettingsFlag)) ConsumeOpenFlag();
             if (File.Exists(Path.Combine(history.Folder, "host.stopped"))) { Close(); return; }
             if (IsVisible && WindowState != WindowState.Minimized) File.WriteAllText(MonitorHost.Heartbeat, "active");
-            recent = history.Read(DateTime.UtcNow.AddMinutes(-4)); latest = recent.LastOrDefault(); lastSampleTime = history.LastTime(); UpdateLive();
+            recent = history.Read(DateTime.UtcNow.AddMinutes(-4)); latest = recent.LastOrDefault(); lastSampleTime = history.LastTime(); UpdateLive(); Updater.ConfirmStartup(data != null); if (Updater.TakeResult() is string updateResult) Toast(updateResult);
             if (page == "network" && IsVisible && WindowState != WindowState.Minimized && !(Keyboard.FocusedElement is TextBox)) updatePage?.Invoke();
             if (data != null && customFrom == null && IsVisible && WindowState != WindowState.Minimized)
             {

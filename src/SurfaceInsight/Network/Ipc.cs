@@ -1,4 +1,4 @@
-﻿using System.IO.Pipes;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -8,7 +8,7 @@ namespace SurfaceInsight.Network;
 /// <summary>Wire protocol between the tray host and the elevated enhanced-session broker: length-prefixed JSON frames with fixed message types.</summary>
 public static class Ipc
 {
-    public const int Version = 1, MaxFrameBytes = 1024 * 1024, MaxQueuedFrames = 32, HeartbeatSeconds = 2, WatchdogSeconds = 15;
+    public const int Version = 2, MaxFrameBytes = 1024 * 1024, MaxQueuedFrames = 32, HeartbeatSeconds = 2, WatchdogSeconds = 15;
     public static readonly JsonSerializerOptions Json = new() { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, PropertyNamingPolicy = JsonNamingPolicy.CamelCase, NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals };
 
     public static async Task WriteAsync(Stream s, Msg m, CancellationToken ct)
@@ -46,6 +46,7 @@ public static class Ipc
 public sealed class Msg
 {
     public string T { get; set; } = ""; public int V { get; set; } public string? Nonce { get; set; } public int Pid { get; set; } public bool Ok { get; set; } public string? Error { get; set; }
+    public long DroppedFrames { get; set; } public ulong DroppedBytes { get; set; }
     public long Seq { get; set; } public long Utc { get; set; } public List<BucketMsg>? Buckets { get; set; } public List<NameMsg>? Names { get; set; }
     public long Lost { get; set; } public long Overflow { get; set; } public long Unsupported { get; set; } public long FlowsDropped { get; set; }
     public string? Session { get; set; } public bool DnsOk { get; set; } public string? Note { get; set; }
