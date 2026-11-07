@@ -51,6 +51,15 @@ Unzip into a permanent folder and run `SurfaceInsight.exe`. Single-file `.exe` v
 
 ### Install
 
+> **Until 1.1.1 is published, use the 1.1.0 installer.** The commands further down need the 1.1.1 release, which does not exist yet, so they will fail with a "not found" error. To install the current release (1.1.0), use the installer from its tag. This release is unsigned; the installer checks the download against the release's `SHA256SUMS.txt`.
+>
+> ```powershell
+> Invoke-WebRequest https://raw.githubusercontent.com/khurrammuhammad/surface-insight/v1.1.0/scripts/install.ps1 -OutFile install.ps1
+> .\install.ps1
+> ```
+>
+> To remove it: `.\install.ps1 -Uninstall` (add `-RemoveData` to delete your history too). Do not use the `main` branch's `install.ps1` with the 1.1.0 release: it needs the file inventory that only 1.1.1 packages contain.
+
 For the per-release installer that selects the native build, verifies it and adds a Start menu shortcut, download and inspect the signed script in PowerShell:
 
 ```powershell
