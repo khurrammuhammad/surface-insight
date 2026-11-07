@@ -39,7 +39,7 @@ public sealed partial class MainWindow : Window
         LoadSettings(); ApplyTheme(); Content = BuildShell();
         toastTimer.Tick += (_, _) => { toastTimer.Stop(); toast.Visibility = Visibility.Collapsed; };
         timer.Tick += (_, _) => Tick(); timer.Start();
-        Loaded += (_, _) => { Tick(); StartLoad(); EmulationNotice(); };
+        Loaded += (_, _) => { Tick(); StartLoad(); EmulationNotice(); ConsumeOpenFlag(); if (Updater.TakeResult() is string upd) Toast(upd); };
         Closing += (_, _) => { timer.Stop(); try { File.Delete(MonitorHost.Heartbeat); } catch { } history.Dispose(); };
         StateChanged += (_, _) => { if (shell != null) shell.Margin = WindowState == WindowState.Maximized ? new Thickness(8) : new Thickness(0); };
         Microsoft.Win32.SystemEvents.PowerModeChanged += (_, e) => { if (e.Mode == Microsoft.Win32.PowerModes.Suspend) Dispatcher.Invoke(timer.Stop); if (e.Mode == Microsoft.Win32.PowerModes.Resume) Dispatcher.Invoke(() => { timer.Start(); Tick(); StartLoad(); }); };
@@ -102,6 +102,15 @@ public sealed partial class MainWindow : Window
         return new Border { Child = outer, BorderBrush = Pal.Edge, BorderThickness = new Thickness(0, 0, 1, 0) };
     }
 
+    // ---------- tray -> Settings (update check) ----------
+    bool runUpdateCheck;
+    /// <summary>The tray monitor asked to open Settings, and (for "Check for updates…") to run the update check right away.</summary>
+    void ConsumeOpenFlag()
+    {
+        string cmd; try { if (!File.Exists(Updater.OpenSettingsFlag)) return; cmd = File.ReadAllText(Updater.OpenSettingsFlag).Trim(); File.Delete(Updater.OpenSettingsFlag); } catch { return; }
+        Show(); WindowState = WindowState.Normal; Activate(); runUpdateCheck = cmd == "check"; if (page == "settings") page = "now"; Go("settings");
+    }
+
     // ---------- navigation / range ----------
     void Go(string key, string? appName = null)
     {
@@ -128,6 +137,7 @@ public sealed partial class MainWindow : Window
         try
         {
             if (showSignal.WaitOne(0)) { Show(); WindowState = WindowState.Normal; Activate(); }
+            if (File.Exists(Updater.OpenSettingsFlag)) ConsumeOpenFlag();
             if (File.Exists(Path.Combine(history.Folder, "host.stopped"))) { Close(); return; }
             if (IsVisible && WindowState != WindowState.Minimized) File.WriteAllText(MonitorHost.Heartbeat, "active");
             recent = history.Read(DateTime.UtcNow.AddMinutes(-4)); latest = recent.LastOrDefault(); lastSampleTime = history.LastTime(); UpdateLive();
