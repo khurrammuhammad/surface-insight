@@ -1,10 +1,17 @@
 version: 2
 updates:
+  # Minor and patch updates arrive as one pull request per ecosystem. Major updates stay separate so each can be reviewed and tested on its own.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
   - package-ecosystem: nuget
     directory: /src/SurfaceInsight
     schedule:
       interval: monthly
+    groups:
+      nuget-minor-patch:
+        update-types: [minor, patch]
