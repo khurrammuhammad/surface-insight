@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Publish a release with this tag (for example v1.1.0). Leave empty to only build and test. Must match <Version> in the project file and run from main.'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -54,13 +59,20 @@ jobs:
           compression-level: 0
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        # Runs for a pushed v* tag, or for a manual run on main that names a release tag.
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release_tag != '')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
-          $tag = '${{ github.ref_name }}'
-          $generated = gh api "repos/${{ github.repository }}/releases/generate-notes" -f tag_name=$tag --jq .body
+          $tag = $env:RELEASE_TAG
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') { throw "Release tag '$tag' must look like v1.2.3" }
+          $version = ([xml](Get-Content src/SurfaceInsight/SurfaceInsight.csproj -Raw)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          if ($tag -ne "v$version") { throw "Tag $tag does not match <Version> $version in the project file. Bump the version first." }
+          gh release view $tag 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists." }
+          $generated = gh api "repos/${{ github.repository }}/releases/generate-notes" -f tag_name=$tag -f target_commitish=$env:GITHUB_SHA --jq .body
           $header = (Get-Content .github/release-header.md -Raw).Replace('{{TAG}}', $tag)
           Set-Content release-notes.md ($header + $generated) -Encoding utf8
-          gh release create $tag (Get-ChildItem dist/release/*).FullName --title "Surface Insight $tag" --notes-file release-notes.md
+          gh release create $tag (Get-ChildItem dist/release/*).FullName --target $env:GITHUB_SHA --title "Surface Insight $tag" --notes-file release-notes.md
