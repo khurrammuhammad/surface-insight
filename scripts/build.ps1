@@ -2,9 +2,10 @@
   Builds self-contained Surface Insight packages for Windows x64 and/or Windows Arm64.
     .\scripts\build.ps1 -Arch all          # both, into .\dist
     .\scripts\build.ps1 -Arch arm64 -SkipGeo
+    .\scripts\build.ps1 -Arch all -SingleFile   # also a single self-extracting SurfaceInsight.exe per architecture (experimental)
   Needs the .NET 10 SDK (set $env:DOTNET to use a specific dotnet.exe). Output: out\publish-win-<arch>\ and dist\SurfaceInsight-<version>-win-<arch>.zip
 #>
-param([ValidateSet('x64', 'arm64', 'all')][string]$Arch = 'all', [switch]$SkipGeo)
+param([ValidateSet('x64', 'arm64', 'all')][string]$Arch = 'all', [switch]$SkipGeo, [switch]$SingleFile)
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $proj = Join-Path $repo 'src\SurfaceInsight\SurfaceInsight.csproj'
@@ -38,5 +39,19 @@ foreach ($a in $archs) {
     $zip = Join-Path $repo "dist\SurfaceInsight-$version-$rid.zip"; if (Test-Path $zip) { Remove-Item $zip }
     Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip -CompressionLevel Optimal
     Write-Host ("   OK  {0}  ({1} MB)" -f $zip, [int]((Get-Item $zip).Length / 1MB))
+
+    if ($SingleFile) {
+        try {
+            # One self-extracting exe: managed code, native libraries and Assets are bundled and unpacked to a per-user cache on first run.
+            $sfOut = Join-Path $repo "out\publish-single-$rid"; Write-Host "== Publishing $rid (single file)"
+            if (Test-Path $sfOut) { Remove-Item $sfOut -Recurse -Force }
+            & $dotnet publish $proj -c Release -r $rid --self-contained true -o $sfOut -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:IncludeAllContentForSelfExtract=true
+            if ($LASTEXITCODE -ne 0) { throw "dotnet publish (single file) failed for $rid" }
+            $exe = Join-Path $sfOut 'SurfaceInsight.exe'; if (-not (Test-Path $exe)) { throw "$rid single-file build has no SurfaceInsight.exe" }
+            if ((Get-PeMachine $exe) -ne $machine[$a]) { throw "$rid single-file exe has the wrong machine type 0x$('{0:X4}' -f (Get-PeMachine $exe))" }
+            $exeCopy = Join-Path $repo "dist\SurfaceInsight-$version-$rid.exe"; Copy-Item $exe $exeCopy -Force
+            Write-Host ("   OK  {0}  ({1} MB)" -f $exeCopy, [int]((Get-Item $exeCopy).Length / 1MB))
+        } catch { Write-Warning "Single-file build for $rid failed and is skipped (the zip is unaffected): $($_.Exception.Message)"; Remove-Item (Join-Path $repo "dist\SurfaceInsight-$version-$rid.exe") -ErrorAction SilentlyContinue }
+    }
 }
 Write-Host "Done. Version $version."

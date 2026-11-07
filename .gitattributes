@@ -1,0 +1,6 @@
+*.mmdb binary
+*.png binary
+*.ico binary
+*.ps1 text eol=lf
+# Bundled map data and the downloaded IP database are not "the project" for language statistics.
+src/SurfaceInsight/Assets/** linguist-vendored

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/khurrammuhammad/surface-insight/security/advisories/new
+    about: Please report security problems privately, not as a public issue.
+  - name: Read the user guide
+    url: https://github.com/khurrammuhammad/surface-insight/blob/main/docs/Read-Me.md
+    about: Pages, network monitoring, measurement limits and what each number means.

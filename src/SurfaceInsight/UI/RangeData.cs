@@ -1,12 +1,14 @@
 ﻿namespace SurfaceInsight;
 
-public sealed class InstAgg { public int Pid; public long Start; public double CpuPctSec, Sec, Peak; }
+public sealed class InstAgg { public int Pid; public long Start; public double CpuPctSec, Sec, Peak; public int? Mach; }
 
 public sealed class AppAgg
 {
     public string Name = ""; public double CpuPctSec, Peak, MemSum, MemSec, IoSum, Sec, NpuSum, NpuSec; public double? Gpu, Npu;
     public Dictionary<(int, long), InstAgg> Inst = new();
     public double AvgCpu, CpuSeconds, Share, AvgMem, AvgIo; public double? AvgNpu; public string Activity = "Low";
+    /// <summary>Architecture label for the Apps table ("x64", "Arm64", "x64 · emulated", "Mixed" or "—" when unknown) and whether any instance runs under emulation.</summary>
+    public string Arch = "—"; public bool Emulated;
 }
 
 public sealed class Bucket
@@ -64,7 +66,7 @@ public sealed class RangeData
             var gg = g2.Where(x => x.Gpu.HasValue).Select(x => x.Gpu!.Value).DefaultIfEmpty(double.NaN).Max(); if (double.IsFinite(gg)) a.Gpu = Math.Max(a.Gpu ?? 0, gg);
             if (s.Npu.HasValue) { double nn = g2.Select(x => x.Npu ?? 0).DefaultIfEmpty(0).Max(); a.Npu = Math.Max(a.Npu ?? 0, nn); a.NpuSum += nn * w; a.NpuSec += w; b.AppNpu[g2.Key] = b.AppNpu.GetValueOrDefault(g2.Key) + nn * w; }
             b.AppCpu[g2.Key] = b.AppCpu.GetValueOrDefault(g2.Key) + cpu * w; b.AppMem[g2.Key] = b.AppMem.GetValueOrDefault(g2.Key) + mem * w; b.AppIo[g2.Key] = b.AppIo.GetValueOrDefault(g2.Key) + io * w; b.IoSum += io * w; TotalCpuPctSec += cpu * w;
-            foreach (var p in g2) { var k = (p.Pid, p.Start); if (!a.Inst.TryGetValue(k, out var inst)) a.Inst[k] = inst = new InstAgg { Pid = p.Pid, Start = p.Start }; inst.CpuPctSec += p.Cpu * w; inst.Sec += w; inst.Peak = Math.Max(inst.Peak, p.Cpu); }
+            foreach (var p in g2) { var k = (p.Pid, p.Start); if (!a.Inst.TryGetValue(k, out var inst)) a.Inst[k] = inst = new InstAgg { Pid = p.Pid, Start = p.Start }; inst.CpuPctSec += p.Cpu * w; inst.Sec += w; inst.Peak = Math.Max(inst.Peak, p.Cpu); if (p.Mach.HasValue) inst.Mach = p.Mach; }
         }
     }
 
@@ -85,6 +87,8 @@ public sealed class RangeData
             a.Share = TotalCpuPctSec > 0 ? a.CpuPctSec / TotalCpuPctSec * 100 : 0;
             a.AvgMem = a.MemSec > 0 ? a.MemSum / a.MemSec : 0; a.AvgIo = TotalSec > 0 ? a.IoSum / TotalSec : 0;
             a.AvgNpu = a.NpuSec > 0 ? a.NpuSum / a.NpuSec : null; a.Activity = Insights.Activity(a.AvgCpu, a.Peak);
+            var machs = a.Inst.Values.Where(i => i.Mach.HasValue).Select(i => i.Mach!.Value).Distinct().ToList();
+            a.Arch = machs.Count == 0 ? "—" : machs.Count == 1 ? Platform.ArchLabel(machs[0]) : "Mixed"; a.Emulated = machs.Any(m => Platform.IsEmulatedMachine(m, System.Runtime.InteropServices.RuntimeInformation.OSArchitecture));
         }
     }
 
