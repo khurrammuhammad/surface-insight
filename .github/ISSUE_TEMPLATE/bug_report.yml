@@ -1,0 +1,48 @@
+name: Bug report
+description: Something is wrong, missing or confusing
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Do not attach your history folder** (`%LOCALAPPDATA%\SurfaceInsight`) or paste network history. It lists the apps you use and the hosts they contact.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you saw instead. Screenshots help (check them for anything private).
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build line
+      description: From Settings > About this build.
+      placeholder: "Version 1.1.0 · Arm64 build (native)"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and Windows version
+      placeholder: "Surface Laptop 7, Windows 11 24H2"
+    validations:
+      required: true
+  - type: textarea
+    id: selftest
+    attributes:
+      label: Self-test output
+      description: Run `SurfaceInsight.exe --self-test`, then paste `self-test.txt`. Add `--ci` on a PC without a battery.
+      render: text
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where?
+      options: [Now, Timeline, Apps, Network, Battery, Investigate, Settings, Tray or startup, Installer or download, Other]
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed anything private from screenshots and logs.
+          required: true
