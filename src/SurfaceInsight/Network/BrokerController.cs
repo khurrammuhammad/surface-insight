@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Pipes;
@@ -14,7 +14,9 @@ public sealed class BrokerController : IDisposable
 {
     public enum Phase { Off, Starting, Active, Failed }
     public Phase State { get; private set; } = Phase.Off; public string Error { get; private set; } = ""; public string Note { get; private set; } = ""; public bool DnsOk { get; private set; }
-    public DateTime? LastBatchUtc { get; private set; } public DateTime? StartedUtc { get; private set; } public long Lost, Overflow;
+    public DateTime? LastBatchUtc { get; private set; }
+    public DateTime? StartedUtc { get; private set; }
+    public long Lost, Overflow;
     readonly ConcurrentQueue<Msg> batches = new(); CancellationTokenSource? cts; NamedPipeServerStream? pipe; Task? run; readonly SemaphoreSlim writeLock = new(1, 1); volatile bool connectionClosedByUs;
     public event Action<string>? Log; public bool PolicyOk { get; private set; }
     public List<string> Blocks { get; private set; } = new(); public event Action<IReadOnlyList<string>>? BlocksChanged; long nextReq; readonly ConcurrentDictionary<long, TaskCompletionSource<Msg>> pending = new();
@@ -26,20 +28,29 @@ public sealed class BrokerController : IDisposable
         try { await writeLock.WaitAsync(); try { await Ipc.WriteAsync(pipe, new Msg { T = type, Req = id, Path = path }, CancellationToken.None); } finally { writeLock.Release(); } using var c = new CancellationTokenSource(timeout); using (c.Token.Register(() => tcs.TrySetException(new TimeoutException("The broker did not answer in time.")))) return await tcs.Task; }
         finally { pending.TryRemove(id, out _); }
     }
-    public bool TryDequeue(out Msg m) => batches.TryDequeue(out m!);
+    readonly object lossLock = new();
+    Msg? pendingLoss;
+    public bool TryDequeue(out Msg m)
+    {
+        if (batches.TryDequeue(out m!)) return true;
+        lock (lossLock) { m = pendingLoss!; pendingLoss = null; }
+        return m != null;
+    }
     public bool IsRunning => State is Phase.Starting or Phase.Active;
 
     public void Start()
     {
         if (IsRunning) return; cts = new CancellationTokenSource(); State = Phase.Starting; Error = ""; Note = "Waiting for the administrator prompt…"; DnsOk = false; Lost = Overflow = 0; StartedUtc = null; LastBatchUtc = null; connectionClosedByUs = false;
         while (batches.TryDequeue(out _)) { }
+        pendingLoss = null;
         run = Task.Run(() => RunAsync(cts.Token));
     }
     public void Stop()
     {
         if (!IsRunning) { State = Phase.Off; return; }
-        connectionClosedByUs = true; try { if (pipe is { IsConnected: true }) { writeLock.Wait(1000); try { Ipc.WriteAsync(pipe, new Msg { T = "stop" }, CancellationToken.None).Wait(2000); } finally { writeLock.Release(); } } } catch { }
-        cts?.Cancel(); State = Phase.Off; Note = "Stopped."; try { pipe?.Dispose(); } catch { } EndBlocks();
+        connectionClosedByUs = true; try { if (pipe is { IsConnected: true }) { if (!writeLock.Wait(1000)) throw new TimeoutException("Broker writer is busy."); try { Ipc.WriteAsync(pipe, new Msg { T = "stop" }, CancellationToken.None).Wait(2000); } finally { writeLock.Release(); } } } catch { }
+        cts?.Cancel(); State = Phase.Off; Note = "Stopped."; try { pipe?.Dispose(); } catch { }
+        EndBlocks();
     }
 
     async Task RunAsync(CancellationToken ct)
@@ -49,16 +60,32 @@ public sealed class BrokerController : IDisposable
             string name = "SurfaceInsight.NetBroker." + Guid.NewGuid().ToString("N"), nonce = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
             var ps = new PipeSecurity(); ps.AddAccessRule(new PipeAccessRule(WindowsIdentity.GetCurrent().User!, PipeAccessRights.FullControl, AccessControlType.Allow));
             pipe = NamedPipeServerStreamAcl.Create(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 64 * 1024, 64 * 1024, ps);
+            Process? brokerProcess = null;
             try
             {
-                var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden }; psi.ArgumentList.Add("--network-broker"); psi.ArgumentList.Add(name); psi.ArgumentList.Add(nonce); psi.ArgumentList.Add(Environment.ProcessId.ToString());
-                Process.Start(psi)?.Dispose();
+                var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden }; psi.ArgumentList.Add("--network-broker"); psi.ArgumentList.Add(name); psi.ArgumentList.Add(nonce); psi.ArgumentList.Add(Environment.ProcessId.ToString()); psi.ArgumentList.Add(WindowsIdentity.GetCurrent().User!.Value);
+                brokerProcess = Process.Start(psi);
             }
             catch (Win32Exception ex) when (ex.NativeErrorCode == 1223) { Fail("Administrator permission was declined. Basic monitoring continues."); return; }
             catch (Exception ex) { Fail("The enhanced session could not start: " + ex.Message); return; }
 
             using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct); connectCts.CancelAfter(TimeSpan.FromSeconds(120));
-            try { await pipe.WaitForConnectionAsync(connectCts.Token); } catch (OperationCanceledException) { if (!ct.IsCancellationRequested) Fail("The enhanced session did not connect within two minutes."); return; }
+            using var startedBroker = brokerProcess;
+            try
+            {
+                var connected = pipe.WaitForConnectionAsync(connectCts.Token);
+                if (startedBroker != null)
+                {
+                    var exited = startedBroker.WaitForExitAsync(connectCts.Token);
+                    if (await Task.WhenAny(connected, exited) == exited)
+                    {
+                        Fail(startedBroker.ExitCode == 6 ? "Enhanced monitoring requires administrator consent from the same Windows account. Basic monitoring continues." : "The elevated helper exited before connecting. Basic monitoring continues.");
+                        return;
+                    }
+                }
+                await connected;
+            }
+            catch (OperationCanceledException) { if (!ct.IsCancellationRequested) Fail("The enhanced session did not connect within two minutes."); return; }
 
             // Authenticate the peer: it must be our own executable and present the session nonce.
             int peer = Ipc.ClientPid(pipe); var hello = await ReadWithTimeout(pipe, TimeSpan.FromSeconds(10), ct);
@@ -66,6 +93,7 @@ public sealed class BrokerController : IDisposable
             await Ipc.WriteAsync(pipe, new Msg { T = "welcome", Ok = true, V = Ipc.Version }, ct); StartedUtc = DateTime.UtcNow; State = Phase.Active; Note = "Connected.";
             using var hbCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _ = Task.Run(async () => { try { while (!hbCts.IsCancellationRequested) { await Task.Delay(TimeSpan.FromSeconds(Ipc.HeartbeatSeconds), hbCts.Token); await writeLock.WaitAsync(hbCts.Token); try { await Ipc.WriteAsync(pipe, new Msg { T = "hb" }, hbCts.Token); } finally { writeLock.Release(); } } } catch { } });
+            long lastSeq = 0;
             while (!ct.IsCancellationRequested)
             {
                 var m = await Ipc.ReadAsync(pipe, ct); if (m == null) break;
@@ -73,7 +101,30 @@ public sealed class BrokerController : IDisposable
                 {
                     case "status": DnsOk = m.DnsOk; PolicyOk = m.PolicyOk; Note = m.Note ?? ""; break;
                     case "block-result": Blocks = m.Blocks ?? new(); BlocksChanged?.Invoke(Blocks); if (pending.TryGetValue(m.Req, out var tcs)) tcs.TrySetResult(m); break;
-                    case "batch": if (batches.Count < 256) batches.Enqueue(m); else Interlocked.Increment(ref Overflow); LastBatchUtc = DateTime.UtcNow; Interlocked.Add(ref Lost, m.Lost); Interlocked.Add(ref Overflow, m.Overflow); break;
+                    case "batch":
+                        if (lastSeq != 0 && m.Seq > lastSeq + 1 && m.DroppedFrames == 0) m.DroppedFrames = m.Seq - lastSeq - 1;
+                        lastSeq = m.Seq;
+                        if (batches.Count < 256) batches.Enqueue(m);
+                        else
+                        {
+                            Interlocked.Increment(ref Overflow);
+                            lock (lossLock)
+                            {
+                                var oldLoss = pendingLoss;
+                                pendingLoss = new Msg
+                                {
+                                    T = "batch",
+                                    Utc = m.Utc,
+                                    Lost = (oldLoss?.Lost ?? 0) + m.Lost,
+                                    Overflow = (oldLoss?.Overflow ?? 0) + m.Overflow,
+                                    Unsupported = (oldLoss?.Unsupported ?? 0) + m.Unsupported,
+                                    FlowsDropped = (oldLoss?.FlowsDropped ?? 0) + m.FlowsDropped,
+                                    DroppedFrames = (oldLoss?.DroppedFrames ?? 0) + m.DroppedFrames + 1,
+                                    DroppedBytes = (oldLoss?.DroppedBytes ?? 0) + m.DroppedBytes + (ulong)(m.Buckets?.Sum(b => (decimal)b.Sent + b.Recv) ?? 0)
+                                };
+                            }
+                        }
+                        LastBatchUtc = DateTime.UtcNow; Interlocked.Add(ref Lost, m.Lost); Interlocked.Add(ref Overflow, m.Overflow + m.DroppedFrames); break;
                     case "hb": LastBatchUtc ??= DateTime.UtcNow; break;
                     default: throw new InvalidDataException("Unexpected message " + m.T);
                 }
@@ -88,6 +139,6 @@ public sealed class BrokerController : IDisposable
     static async Task<Msg?> ReadWithTimeout(Stream s, TimeSpan t, CancellationToken ct) { using var c = CancellationTokenSource.CreateLinkedTokenSource(ct); c.CancelAfter(t); try { return await Ipc.ReadAsync(s, c.Token); } catch { return null; } }
     void Fail(string why) { Error = why; Note = ""; State = Phase.Failed; Log?.Invoke(why); EndBlocks(); }
     /// <summary>Temporary blocks live only as long as the broker process; once it is gone Windows has removed them.</summary>
-    void EndBlocks() { if (Blocks.Count == 0) return; Blocks = new(); BlocksChanged?.Invoke(Blocks); foreach (var p in pending.Values) p.TrySetException(new InvalidOperationException("The enhanced session ended.")); }
+    void EndBlocks() { if (Blocks.Count > 0) { Blocks = new(); BlocksChanged?.Invoke(Blocks); } foreach (var p in pending.Values) p.TrySetException(new InvalidOperationException("The enhanced session ended.")); }
     public void Dispose() { Stop(); cts?.Dispose(); }
 }

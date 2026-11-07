@@ -51,36 +51,34 @@ Unzip into a permanent folder and run `SurfaceInsight.exe`. Single-file `.exe` v
 
 ### Install
 
-Prefer one command that picks the right build, verifies it, adds a Start menu shortcut and starts the monitor? In PowerShell:
+For the per-release installer that selects the native build, verifies it and adds a Start menu shortcut, download and inspect the signed script in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/khurrammuhammad/surface-insight/main/scripts/install.ps1 | iex
+Invoke-WebRequest https://github.com/khurrammuhammad/surface-insight/releases/download/v1.1.1/install.ps1 -OutFile install.ps1
+Get-AuthenticodeSignature .\install.ps1   # expect Valid and the release publisher
+.\install.ps1
 ```
 
 Your history is kept when you update. To remove it:
 
 ```powershell
-irm https://raw.githubusercontent.com/khurrammuhammad/surface-insight/main/scripts/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://github.com/khurrammuhammad/surface-insight/releases/download/v1.1.1/install.ps1 -OutFile install.ps1
 .\install.ps1 -Uninstall          # add -RemoveData to delete your history too
 ```
 
-No administrator rights are needed to install. You can read the [installer](scripts/install.ps1) before running it.
+No administrator rights are needed for the normal per-user install. Read the [installer](scripts/install.ps1) before running it. Every installation requires both a matching SHA-256 checksum and a verified file inventory. Unknown files are preserved, and a failed startup restores the previous inventoried files.
 
-### Code signing
+**Migrating from 1.1.0 or earlier:** old ZIP installs have no file ownership inventory, so automatic replacement is refused. Quit the old copy from the tray and install 1.1.1 into a **new empty dedicated folder**, for example `.\install.ps1 -InstallDir "$env:LOCALAPPDATA\Programs\SurfaceInsight-1.1.1"`. Existing history and settings in `%LOCALAPPDATA%\SurfaceInsight` remain available. Do not put data in the application folder, delete an existing `.old` folder, or run the old copy alongside the new one. Legacy ZIP uninstall must be done manually after checking that the folder is dedicated to the app. Single-file updates replace only the executable.
 
-Free code signing is being arranged through [SignPath.io](https://signpath.io), with a certificate from the [SignPath Foundation](https://signpath.org). We have applied to the SignPath Foundation program; releases are **not signed yet**, and this section will be updated when approval comes through. Once signed, releases are built by GitHub Actions from this repository's source and submitted for signing from there. Only the project maintainer approves signing requests.
+### Code signing and Windows warnings
 
-### "Windows protected your PC"
+The public **1.1.0** assets were unsigned. The **1.1.1 release workflow refuses unsigned publication**: it requires an approved code-signing certificate, timestamps and verifies the app executables and installer, retests signed executables on each native architecture, and produces provenance attestations. Development CI artifacts remain unsigned and are not public release downloads. Configuring signing and completing the Windows acceptance checklist are maintainer prerequisites; this source change does not mean a signed 1.1.1 release already exists.
 
-The builds are not code-signed yet (see above), so Windows SmartScreen may warn the first time. Choose **More info > Run anyway**. If you downloaded the zip in a browser, right-click it, open **Properties** and tick **Unblock** before extracting (the installer does this for you). You can check a download against `SHA256SUMS.txt`:
-
-```powershell
-(Get-FileHash .\SurfaceInsight-win-x64.zip -Algorithm SHA256).Hash
-```
+Check `Get-AuthenticodeSignature .\SurfaceInsight.exe` and compare its publisher with the release notes. Signing does not guarantee SmartScreen reputation or eliminate antivirus warnings. Investigate unexpected publisher/signature/hash results; do not disable antivirus to install the app. Checksums detect changed downloads, but a checksum served from the same compromised origin is not independent publisher authentication.
 
 ### Updating
 
-Open **Settings > Updates > Check for updates**. If a newer release exists you'll see what's new and an **Update now** button: the app downloads the right build for your PC, checks it against the release's `SHA256SUMS.txt`, restarts itself on the new version and keeps your history and settings. If anything goes wrong, the previous version is put back. Tick **Check for updates automatically** if you want the tray monitor to look once a day and show a notification (it never installs without your click).
+Open **Settings > Updates > Check for updates**. If a newer release exists you'll see what's new and an **Update now** button: the app downloads the right build for your PC, checks it against the release's `SHA256SUMS.txt`, restarts itself on the new version and keeps your history and settings. For inventoried installations, backups are retained until the replacement dashboard and collector acknowledge startup. Copy/startup failures trigger file-level recovery; if a subsequently modified file prevents safe rollback, the error identifies retained recovery backups rather than overwriting it. See [release and recovery guidance](docs/Release-Checklist.md). Tick **Check for updates automatically** if you want the tray monitor to look once a day and show a notification (it never installs without your click).
 
 The first release with this button is 1.1.0. If you have 1.0.0, run the install command above once to get there. If Surface Insight is in a folder that needs administrator rights (for example `C:\Program Files`), **Update now** opens the release page instead. You can always re-run the install command.
 
@@ -117,7 +115,7 @@ You need Windows and the [.NET 10 SDK](https://dotnet.microsoft.com/download).
 
 The script downloads the IP-location database (about 127 MB, see [NOTICE.md](NOTICE.md)) because it is too large for git, publishes self-contained builds, checks that each executable and its native libraries are really for that architecture, and zips them. The app builds and runs without the database; addresses then have no city location.
 
-To publish a release, bump `<Version>` in `src/SurfaceInsight/SurfaceInsight.csproj`, then push a tag. GitHub Actions builds both architectures, self-tests them, and attaches the files and checksums to the release.
+To prepare a release, follow [Release checklist](docs/Release-Checklist.md), including signing setup and acceptance on the exact commit. GitHub Actions builds and tests both forms on native x64/Arm64 runners, signs and retests them, generates checksums and provenance, and creates a **draft** release. The maintainer reviews that draft before public publication.
 
 ```powershell
 git tag v1.1.1
@@ -133,7 +131,7 @@ git push origin v1.1.1
 
 ## Privacy
 
-History includes per-process CPU, GPU, NPU and memory use, battery readings, and (if you turn network monitoring on) which applications connected to which addresses and names. It is stored unencrypted in `%LOCALAPPDATA%\SurfaceInsight`. Don't share that folder or attach it to bug reports.
+History includes per-process CPU, GPU, NPU and memory use, battery readings, and (if you turn network monitoring on) which applications connected to which addresses and names. It is stored unencrypted in `%LOCALAPPDATA%\SurfaceInsight`. Diagnostic captures are retained separately from routine history and may include system paths and process metadata. Clearing routine history does not clear captures and is not secure forensic erasure. Don't share that folder or attach it to public bug reports.
 
 ## Contributing
 

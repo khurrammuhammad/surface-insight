@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.Net;
 using Microsoft.Diagnostics.Tracing;
@@ -45,7 +45,7 @@ public sealed class FlowAggregator
     public int Count => groups.Count;
 }
 
-/// <summary>Elevated role: owns a private ETW session and streams one-second aggregates to the tray host. It never writes files, runs commands or changes system policy.</summary>
+/// <summary>Elevated role: owns a private ETW session and streams one-second aggregates to the tray host. It owns only its ETW session and explicit temporary WFP blocks.</summary>
 public static class BrokerRole
 {
     static readonly Guid KernelNetwork = new("7DD42A49-5329-4832-8DFD-43D979153A88"), DnsClient = new("1C95126E-7EEA-49A9-A3FE-A378B03DDB4D");
@@ -54,11 +54,12 @@ public static class BrokerRole
     static readonly ConcurrentQueue<FlowEvent> queue = new(); static readonly ConcurrentQueue<NameRaw> nameQueue = new(); static long queued, overflow, unsupported, nameCount;
     static readonly Dictionary<int, int[]> index = new();
 
-    /// <summary>--network-broker &lt;pipeName&gt; &lt;nonce&gt; &lt;hostPid&gt;</summary>
+    /// <summary>--network-broker &lt;pipeName&gt; &lt;nonce&gt; &lt;hostPid&gt; &lt;userSid&gt;</summary>
     public static int Run(string[] args)
     {
         if (args.Length < 4 || !int.TryParse(args[3], out int hostPid)) return 2; string pipe = args[1], nonce = args[2];
         if (TraceEventSession.IsElevated() != true) return 3;
+        if (args.Length != 5 || System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value != args[4]) return 6;
         using var cts = new CancellationTokenSource(); TraceEventSession? session = null; var started = Ipc.AwakeSeconds();
         try
         {
@@ -69,11 +70,11 @@ public static class BrokerRole
             Ipc.WriteAsync(client, new Msg { T = "hello", V = Ipc.Version, Nonce = nonce, Pid = Environment.ProcessId }, cts.Token).GetAwaiter().GetResult();
             var welcome = Ipc.ReadAsync(client, cts.Token).GetAwaiter().GetResult(); if (welcome is not { T: "welcome", Ok: true }) return 5;
 
-            StopOrphans(); string name = SessionPrefix + Guid.NewGuid().ToString("N")[..8]; session = new TraceEventSession(name) { BufferSizeMB = 32 }; session.CpuSampleIntervalMSec = 0;
+            string name = SessionPrefix + hostPid + "-" + Guid.NewGuid().ToString("N"); session = new TraceEventSession(name) { BufferSizeMB = 32 }; session.CpuSampleIntervalMSec = 0;
             session.EnableProvider(KernelNetwork, TraceEventLevel.Informational, ulong.MaxValue); bool dnsOk = true; try { session.EnableProvider(DnsClient, TraceEventLevel.Informational, ulong.MaxValue); } catch { dnsOk = false; }
             WfpPolicy? policy = null; string policyNote = ""; try { policy = new WfpPolicy(); PolicyForCleanup = policy; } catch (Exception ex) { policyNote = "Blocking unavailable: " + ex.Message; }
-            session.Source.Dynamic.All += OnEvent; var proc = new Thread(() => { try { session.Source.Process(); } catch { } }) { IsBackground = true, Name = "etw" }; proc.Start();
-            var outbox = new BlockingCollection<Msg>(Ipc.MaxQueuedFrames); long dropped = 0; double lastHost = Ipc.AwakeSeconds();
+            session.Source.Dynamic.All += OnEvent; var proc = new Thread(() => { try { session.Source.Process(); } catch { } finally { cts.Cancel(); } }) { IsBackground = true, Name = "etw" }; proc.Start();
+            var outbox = new BlockingCollection<Msg>(Ipc.MaxQueuedFrames); var delivery = new BrokerDelivery(outbox); double lastHost = Ipc.AwakeSeconds();
             var writer = Task.Run(async () => { try { foreach (var m in outbox.GetConsumingEnumerable(cts.Token)) await Ipc.WriteAsync(client, m, cts.Token); } catch { cts.Cancel(); } });
             var reader = Task.Run(async () => { try { while (!cts.IsCancellationRequested) { var m = await Ipc.ReadAsync(client, cts.Token); if (m == null) break; if (m.T == "stop") break; if (m.T == "hb") lastHost = Ipc.AwakeSeconds(); else if (m.T.StartsWith("block-")) HandlePolicy(m, policy, outbox); } } catch { } cts.Cancel(); });
             outbox.Add(new Msg { T = "status", Ok = true, Session = name, DnsOk = dnsOk, PolicyOk = policy != null, Note = (dnsOk ? "Kernel-Network and DNS-Client providers enabled." : "DNS-Client provider could not be enabled; names unavailable.") + (policyNote.Length > 0 ? " " + policyNote : "") });
@@ -89,8 +90,9 @@ public static class BrokerRole
                 long newLost = session.EventsLost, lostDelta = newLost - lastLost; lastLost = newLost; var buckets = agg.Drain(Resolve); long flowsDropped = agg.FlowsDropped; agg.FlowsDropped = 0;
                 if (buckets.Count > 0 || names.Count > 0 || lostDelta != 0 || Interlocked.Read(ref overflow) > 0 || Interlocked.Read(ref unsupported) > 0)
                 {
-                    foreach (var chunk in Chunk(buckets, names)) { chunk.Seq = ++seq; chunk.Utc = DateTimeOffset.UtcNow.ToUnixTimeSeconds(); chunk.Lost = lostDelta; chunk.Overflow = Interlocked.Exchange(ref overflow, 0); chunk.Unsupported = Interlocked.Exchange(ref unsupported, 0); chunk.FlowsDropped = flowsDropped; lostDelta = 0; flowsDropped = 0; if (!outbox.TryAdd(chunk)) { Interlocked.Increment(ref dropped); } }
+                    foreach (var chunk in Chunk(buckets, names)) { chunk.Seq = ++seq; chunk.Utc = DateTimeOffset.UtcNow.ToUnixTimeSeconds(); chunk.Lost = lostDelta; chunk.Overflow = Interlocked.Exchange(ref overflow, 0); chunk.Unsupported = Interlocked.Exchange(ref unsupported, 0); chunk.FlowsDropped = flowsDropped; lostDelta = 0; flowsDropped = 0; delivery.TrySend(chunk); }
                 }
+                if (delivery.Pending) delivery.TrySend(new Msg { T = "batch", Seq = ++seq, Utc = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
                 if (Ipc.AwakeSeconds() >= nextSeed) { nextSeed = Ipc.AwakeSeconds() + 300; _ = Task.Run(SeedFromCache); }
                 if (tick.Elapsed.TotalSeconds >= nextHb) { outbox.TryAdd(new Msg { T = "hb", Pid = Environment.ProcessId }); nextHb = tick.Elapsed.TotalSeconds + Ipc.HeartbeatSeconds; }
             }
@@ -140,11 +142,6 @@ public static class BrokerRole
         }
         catch { Interlocked.Increment(ref unsupported); }
     }
-    static void StopOrphans()
-    {
-        try { foreach (var n in TraceEventSession.GetActiveSessionNames().Where(n => n.StartsWith(SessionPrefix, StringComparison.Ordinal))) { try { using var s = new TraceEventSession(n, TraceEventSessionOptions.Attach); s.Stop(); } catch { } } } catch { }
-    }
-
     // ---- ETW callbacks: decode into small structs and enqueue; no I/O, no lookups.
     static void OnEvent(TraceEvent e)
     {

@@ -1,11 +1,11 @@
-﻿namespace SurfaceInsight;
+namespace SurfaceInsight;
 
 public static class SelfTest
 {
     public static void Run(bool ci = false)
     {
-        var results = new List<string>(); int failed = 0;
-        void Check(bool ok, string name) { results.Add((ok ? "PASS " : "FAIL ") + name); if (!ok) failed++; }
+        var results = new List<string>(); int failed = 0, passed = 0, skipped = 0;
+        void Check(bool ok, string name) { results.Add((ok ? "PASS " : "FAIL ") + name); if (!ok) failed++; else passed++; }
         var s = new Sample(DateTime.UtcNow, false, 25, 50, 25000, 50000, 52000, 10, null, null, null, null, "Balanced", new() { new(1, 10, "test", 10, 20, 30, null) }, 5);
         Check(Insights.Rank(new() { s })[0].Cpu == 10, "Normalized CPU ranking");
         Check(Insights.Rank(new() { s, s with { Apps = new() } })[0].Cpu == 5, "Exited processes contribute zero in later intervals");
@@ -166,12 +166,12 @@ public static class SelfTest
         Check(Platform.ProcessMachine(Environment.ProcessId) == (System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.Arm64 ? Platform.MachArm64 : Platform.MachX64), "This process reports its own architecture");
         Check(System.Text.Json.JsonSerializer.Deserialize<AppUsage>("{\"Pid\":1,\"Start\":2,\"Name\":\"old\",\"Cpu\":1,\"Memory\":1,\"Io\":0,\"Gpu\":null,\"Npu\":null}")?.Mach == null, "History saved before the architecture column still loads");
         { string bd = AppContext.BaseDirectory, nd = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.Arm64 ? "arm64" : "amd64"; var missing = new[] { "e_sqlite3.dll", Path.Combine(nd, "KernelTraceControl.dll"), Path.Combine(nd, "msdia140.dll"), Path.Combine("wpt", "perfcore.dll"), Path.Combine("Assets", "ne_50m_land.geojson") }.Where(f => !File.Exists(Path.Combine(bd, f))).ToList(); Check(missing.Count == 0, "Bundled native libraries and map data are present" + (missing.Count > 0 ? " (missing: " + string.Join(", ", missing) + ")" : "")); }
-        UpdaterTests.Run(Check);
+        UpdaterTests.Run(Check, reason => { results.Add("SKIP " + reason); skipped++; });
         Check(Platform.Describe(System.Runtime.InteropServices.Architecture.X64, System.Runtime.InteropServices.Architecture.X64) == "Version " + Platform.Version + " · X64 build (native)" && Platform.Describe(System.Runtime.InteropServices.Architecture.X64, System.Runtime.InteropServices.Architecture.Arm64).EndsWith("(emulated on Arm64)") && Platform.Emulated_(System.Runtime.InteropServices.Architecture.X64, System.Runtime.InteropServices.Architecture.Arm64) && !Platform.Emulated_(System.Runtime.InteropServices.Architecture.Arm64, System.Runtime.InteropServices.Architecture.Arm64), "Platform description distinguishes native and emulated builds");
         results.Add("INFO " + Platform.Describe() + " · " + System.Runtime.InteropServices.RuntimeInformation.OSDescription + (ci ? " · CI mode: live hardware checks skipped" : ""));
         if (!ci) { var c = new Collector(); c.Read(); Thread.Sleep(1200); var live = c.Read();
         Check(live.Cpu >= 0 && live.Cpu <= 100, "Live total CPU range"); Check(live.Apps.All(a => a.Cpu >= 0 && a.Cpu <= 100), "Live process CPU range"); Check(live.Remaining > 0 && live.Full > 0, "Live battery capacity"); Check(live.Gpu == null || live.Gpu >= 0 && live.Gpu <= 100, "PDH GPU range"); using (var gq = new GpuQuery()) Check((live.Npu != null) == gq.HasNpu && (live.Npu == null || live.Npu >= 0 && live.Npu <= 100), "NPU reading " + (gq.HasNpu ? "present for " + (GpuQuery.NpuName() ?? "the NPU") : "absent (no NPU adapter)")); }
-        results.Add($"{results.Count - failed}/{results.Count} passed.");
+        results.Add($"{passed} passed; {failed} failed; {skipped} skipped.");
         File.WriteAllLines(Path.Combine(Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory, "self-test.txt"), results); Environment.ExitCode = failed == 0 ? 0 : 1;
     }
 }

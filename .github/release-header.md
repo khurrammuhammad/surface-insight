@@ -7,15 +7,13 @@
 
 Not sure? Open **Settings > System > About** and look at *System type*. The x64 build also runs on Arm, but through emulation, so it is slower and uses more battery.
 
-Unzip to a permanent folder and run `SurfaceInsight.exe`. Or install and update with one command in PowerShell:
+Unzip into a new dedicated folder and run `SurfaceInsight.exe`. For the signed installer, download `install.ps1` from this release, inspect it, and check `Get-AuthenticodeSignature .\install.ps1` before running `.\install.ps1`. Do not execute a mutable `main` script through `iex`.
 
-```powershell
-irm https://raw.githubusercontent.com/khurrammuhammad/surface-insight/main/scripts/install.ps1 | iex
-```
+**Migration from 1.1.0 ZIP installations:** quit the old tray monitor and use a new empty folder. Old ZIP folders have no file inventory and are deliberately not overwritten automatically. History/settings in LocalAppData are kept. Never delete a pre-existing `.old` folder to make an update work.
 
-A single-file `SurfaceInsight-win-<arch>.exe` is attached when it passed the automated self-test (experimental; it unpacks itself to a cache folder on first start). Verify any download against `SHA256SUMS.txt`.
+Both ZIP and experimental single-file variants are tested natively on the advertised architecture, then signed, timestamped, verified and retested. Verify SHA-256 against `SHA256SUMS.txt`; provenance is available through GitHub artifact attestations. A valid signature does not guarantee that SmartScreen or enterprise policy will allow the app.
 
-These builds are not code-signed yet, so Windows SmartScreen may say "Windows protected your PC". Choose **More info > Run anyway**.
+This is a **draft until the maintainer verifies the Windows acceptance record, publisher identity, downloads and recovery behavior**. The signing certificate subject and exact commit must be recorded here before publication.
 
 ---
 
