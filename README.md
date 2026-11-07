@@ -66,9 +66,13 @@ irm https://raw.githubusercontent.com/khurrammuhammad/surface-insight/main/scrip
 
 No administrator rights are needed to install. You can read the [installer](scripts/install.ps1) before running it.
 
+### Code signing
+
+Free code signing is being arranged through [SignPath.io](https://signpath.io), with a certificate from the [SignPath Foundation](https://signpath.org). We have applied to the SignPath Foundation program; releases are **not signed yet**, and this section will be updated when approval comes through. Once signed, releases are built by GitHub Actions from this repository's source and submitted for signing from there. Only the project maintainer approves signing requests.
+
 ### "Windows protected your PC"
 
-The builds are not code-signed yet, so Windows SmartScreen may warn the first time. Choose **More info > Run anyway**. If you downloaded the zip in a browser, right-click it, open **Properties** and tick **Unblock** before extracting (the installer does this for you). You can check a download against `SHA256SUMS.txt`:
+The builds are not code-signed yet (see above), so Windows SmartScreen may warn the first time. Choose **More info > Run anyway**. If you downloaded the zip in a browser, right-click it, open **Properties** and tick **Unblock** before extracting (the installer does this for you). You can check a download against `SHA256SUMS.txt`:
 
 ```powershell
 (Get-FileHash .\SurfaceInsight-win-x64.zip -Algorithm SHA256).Hash
