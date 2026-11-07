@@ -65,7 +65,11 @@ else {
     try {
         $api = if ($Tag) { "https://api.github.com/repos/$Repo/releases/tags/$Tag" } else { "https://api.github.com/repos/$Repo/releases/latest" }
         try { $release = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'SurfaceInsight-installer'; 'Accept' = 'application/vnd.github+json' } -UseBasicParsing }
-        catch { throw "Could not read the release list from GitHub ($($_.Exception.Message)). Check your internet connection, or download the zip by hand from $releasesPage" }
+        catch {
+            $code = 0; try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+            if ($code -eq 404) { throw $(if ($Tag) { "Release $Tag was not found. See the available versions at $releasesPage" } else { "No release was found. See $releasesPage" }) }
+            throw "Could not read the release list from GitHub ($($_.Exception.Message)). Check your internet connection, or download the zip by hand from $releasesPage"
+        }
         $asset = $release.assets | Where-Object { $_.name -match "^SurfaceInsight-(.+-)?win-$arch\.zip$" } | Select-Object -First 1
         if (-not $asset) { throw "Release $($release.tag_name) has no $arch download. See $releasesPage" }
         Write-Host ("Downloading {0} ({1:N0} MB) from release {2} ..." -f $asset.name, ($asset.size / 1MB), $release.tag_name)
