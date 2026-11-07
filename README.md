@@ -57,7 +57,7 @@ Prefer one command that picks the right build, verifies it, adds a Start menu sh
 irm https://raw.githubusercontent.com/khurrammuhammad/surface-insight/main/scripts/install.ps1 | iex
 ```
 
-Run the same command again to update. Your history is kept. To remove it:
+Your history is kept when you update. To remove it:
 
 ```powershell
 irm https://raw.githubusercontent.com/khurrammuhammad/surface-insight/main/scripts/install.ps1 -OutFile install.ps1
@@ -78,6 +78,14 @@ The builds are not code-signed yet (see above), so Windows SmartScreen may warn 
 (Get-FileHash .\SurfaceInsight-win-x64.zip -Algorithm SHA256).Hash
 ```
 
+### Updating
+
+Open **Settings > Updates > Check for updates**. If a newer release exists you'll see what's new and an **Update now** button: the app downloads the right build for your PC, checks it against the release's `SHA256SUMS.txt`, restarts itself on the new version and keeps your history and settings. If anything goes wrong, the previous version is put back. Tick **Check for updates automatically** if you want the tray monitor to look once a day and show a notification (it never installs without your click).
+
+The first release with this button is 1.1.0. If you have 1.0.0, run the install command above once to get there. If Surface Insight is in a folder that needs administrator rights (for example `C:\Program Files`), **Update now** opens the release page instead. You can always re-run the install command.
+
+Until the builds are code-signed, the checksum protects against a corrupt or altered download, but it can't protect against a compromised GitHub account.
+
 ### Check that it works on a new PC
 
 ```powershell
@@ -89,7 +97,7 @@ Every line should say `PASS`, and the `INFO` line should say `(native)`. The liv
 
 ## FAQ
 
-**Does it send my data anywhere?** No. History is stored in `%LOCALAPPDATA%\SurfaceInsight` and nothing is uploaded; there is no account, analytics or update check. The one thing that touches the network is *reverse DNS* (looking up the owner name of an address you saw in the Network page). It sends a DNS query for that address to your DNS server, runs only when you click it or turn on the optional Settings switch, and is off by default.
+**Does it send my data anywhere?** No. History is stored in `%LOCALAPPDATA%\SurfaceInsight` and nothing is uploaded; there is no account or analytics. Two optional things touch the network, and both are off until you use them: (1) **Check for updates** asks GitHub (`api.github.com`) for the latest release when you press the button, or once a day if you turn on the automatic check; GitHub sees your IP address and the request, and the app sends nothing else. (2) *Reverse DNS* (looking up the owner name of an address you saw in the Network page) sends a DNS query for that address to your DNS server when you click it or turn on its Settings switch.
 
 **Why does it ask for administrator approval?** Only for the optional extras: *enhanced* network monitoring, temporary blocking, and *Investigate* captures. Each one asks every time, and nothing runs elevated permanently. No service or driver is installed.
 

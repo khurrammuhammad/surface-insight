@@ -24,6 +24,7 @@ public class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Length >= 4 && args[0] == "--apply-update") { Updater.RunApplyMode(args); return; }
         if (args.Contains("--diagnose")) { Diagnostics.Run(args); return; }
         if(args.Length==3&&args[0]=="--reports"){File.WriteAllText(args[2],DeepAnalysis.Battery(Path.Combine(args[1],"battery.xml"))+Environment.NewLine+DeepAnalysis.Sleep(Path.Combine(args[1],"sleep.xml")));return;}
         if(args.Length==3&&args[0]=="--analyze"){File.WriteAllText(args[2],DeepAnalysis.Trace(args[1]));return;}

@@ -6,6 +6,8 @@ public sealed class MonitorHost : Forms.ApplicationContext
 {
     public static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(20);
     readonly History history = new(); Collector collector = new(); readonly Forms.NotifyIcon tray;
+    // Update support: the updater signals this event to ask the tray monitor to quit cleanly; the timer runs the opt-in daily check.
+    readonly EventWaitHandle quitSignal = new(false, EventResetMode.AutoReset, Updater.QuitEvent); readonly Forms.Timer updTimer = new() { Interval = 10 * 60 * 1000 }; bool updBusy;
     readonly Forms.Timer timer = new() { Interval = 1000 }; bool busy; volatile bool suspended; DateTime last = DateTime.MinValue, maintenance = DateTime.MinValue;
     Task? stuck; DateTime? lastOk; string? lastError;
     // Network (basic mode) runs on its own timer and worker so a blocked IP Helper call can never delay battery samples.
@@ -27,10 +29,21 @@ public sealed class MonitorHost : Forms.ApplicationContext
         File.Delete(Path.Combine(Folder, "host.stopped"));
         try { var stale = Network.NetworkSettings.ReadBlocks(); if (stale.Blocks.Count > 0) { string why = "The tray monitor stopped unexpectedly; Windows removed the blocks."; blockEnded = DateTime.UtcNow.ToString("O") + "|" + why; auditQueue.Enqueue(("blocks-ended", why)); WriteBlocksFile(); } } catch { }
         tray = new Forms.NotifyIcon { Icon = Brand.TrayIcon(), Text = "Surface Insight", Visible = true };
-        var menu = new Forms.ContextMenuStrip(); menu.Items.Add("Open Surface Insight", null, (_, _) => Open()); menu.Items.Add("Mark loud fans", null, (_, _) => history.Mark()); var netItem = new Forms.ToolStripMenuItem("Network monitoring (basic)") { CheckOnClick = false }; netItem.Click += (_, _) => { Network.NetworkSettings.SetEnabled(!Network.NetworkSettings.IsEnabled); netLast = DateTime.MinValue; }; menu.Opening += (_, _) => netItem.Checked = Network.NetworkSettings.IsEnabled; menu.Items.Add(netItem); var enhItem = new Forms.ToolStripMenuItem("Enhanced monitoring (administrator)"); enhItem.Click += (_, _) => { if (broker != null && broker.IsRunning) StopEnhanced("Stopped from tray"); else StartEnhanced(); }; menu.Opening += (_, _) => { enhItem.Checked = broker != null && broker.IsRunning; enhItem.Enabled = Network.NetworkSettings.IsEnabled; }; menu.Items.Add(enhItem); var rmItem = new Forms.ToolStripMenuItem("Remove all temporary blocks"); rmItem.Click += (_, _) => HandleBlockCommand(new[] { "block-remove-all", "0", "" }); menu.Opening += (_, _) => { lock (blockLock) rmItem.Enabled = blockSince.Count > 0; rmItem.Text = blockSince.Count > 0 ? "Remove all temporary blocks (" + blockSince.Count + ")" : "Remove all temporary blocks"; }; menu.Items.Add(rmItem); menu.Items.Add("Quit", null, (_, _) => ExitThread()); tray.ContextMenuStrip = menu; tray.DoubleClick += (_, _) => Open();
-        Microsoft.Win32.SystemEvents.PowerModeChanged+=(_,e)=>{if(e.Mode==Microsoft.Win32.PowerModes.Suspend)suspended=true;if(e.Mode==Microsoft.Win32.PowerModes.Resume){suspended=false;last=DateTime.MinValue;netResumed=true;netLast=DateTime.MinValue;}}; timer.Tick += async (_, _) => await Tick(); timer.Start(); netTimer.Tick += async (_, _) => await NetTick(); netTimer.Start();
+        var menu = new Forms.ContextMenuStrip(); menu.Items.Add("Open Surface Insight", null, (_, _) => Open()); menu.Items.Add("Mark loud fans", null, (_, _) => history.Mark()); var netItem = new Forms.ToolStripMenuItem("Network monitoring (basic)") { CheckOnClick = false }; netItem.Click += (_, _) => { Network.NetworkSettings.SetEnabled(!Network.NetworkSettings.IsEnabled); netLast = DateTime.MinValue; }; menu.Opening += (_, _) => netItem.Checked = Network.NetworkSettings.IsEnabled; menu.Items.Add(netItem); var enhItem = new Forms.ToolStripMenuItem("Enhanced monitoring (administrator)"); enhItem.Click += (_, _) => { if (broker != null && broker.IsRunning) StopEnhanced("Stopped from tray"); else StartEnhanced(); }; menu.Opening += (_, _) => { enhItem.Checked = broker != null && broker.IsRunning; enhItem.Enabled = Network.NetworkSettings.IsEnabled; }; menu.Items.Add(enhItem); var rmItem = new Forms.ToolStripMenuItem("Remove all temporary blocks"); rmItem.Click += (_, _) => HandleBlockCommand(new[] { "block-remove-all", "0", "" }); menu.Opening += (_, _) => { lock (blockLock) rmItem.Enabled = blockSince.Count > 0; rmItem.Text = blockSince.Count > 0 ? "Remove all temporary blocks (" + blockSince.Count + ")" : "Remove all temporary blocks"; }; menu.Items.Add(rmItem); menu.Items.Add("Check for updates…", null, (_, _) => OpenSettings(true)); menu.Items.Add("Quit", null, (_, _) => ExitThread()); tray.ContextMenuStrip = menu; tray.DoubleClick += (_, _) => Open();
+        Microsoft.Win32.SystemEvents.PowerModeChanged+=(_,e)=>{if(e.Mode==Microsoft.Win32.PowerModes.Suspend)suspended=true;if(e.Mode==Microsoft.Win32.PowerModes.Resume){suspended=false;last=DateTime.MinValue;netResumed=true;netLast=DateTime.MinValue;}}; timer.Tick += async (_, _) => { if (quitSignal.WaitOne(0)) { ExitThread(); return; } await Tick(); }; timer.Start(); updTimer.Tick += async (_, _) => await UpdateTick(); updTimer.Start(); tray.BalloonTipClicked += (_, _) => OpenSettings(false); Task.Run(Updater.Cleanup); netTimer.Tick += async (_, _) => await NetTick(); netTimer.Start();
     }
     void Open() => Process.Start(new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true });
+    /// <summary>Opens the dashboard on Settings. With check, the dashboard also runs the update check (the user asked for it from the tray).</summary>
+    void OpenSettings(bool check) { try { Directory.CreateDirectory(Folder); File.WriteAllText(Updater.OpenSettingsFlag, check ? "check" : "show"); } catch { } Open(); }
+    /// <summary>The daily update check, only when the user turned it on. It never downloads or installs; it shows at most one notification per new version.</summary>
+    async Task UpdateTick()
+    {
+        if (updBusy || suspended || !Updater.AutoEnabled) return; if (Updater.ReadState().Checked is DateTime at && (DateTime.UtcNow - at).TotalHours < 24) return;
+        updBusy = true;
+        try { var r = await Updater.CheckAsync(); if (r.Update is UpdateInfo u && Updater.ReadState().Notified != u.Tag) { Updater.MarkNotified(u.Tag); tray.ShowBalloonTip(10000, "Surface Insight update available", "Version " + u.Version + " is available. Click to review it.", Forms.ToolTipIcon.Info); } }
+        catch { }
+        finally { updBusy = false; }
+    }
     public static void Log(string text)
     {
         try { var f = new FileInfo(ErrorLog); if (f.Exists && f.Length > 64 * 1024) f.Delete(); File.AppendAllText(ErrorLog, DateTime.Now.ToString("s") + "  " + text + Environment.NewLine); } catch { }
@@ -152,5 +165,5 @@ public sealed class MonitorHost : Forms.ApplicationContext
         }
         catch (Exception ex) { netMode = Network.NetMode.Partial; netError = ex.Message; Log("Network stage '" + netCollector.Stage + "': " + ex); WriteNetStatus(netCollector.Stage); }
         finally { netBusy = false; }
-    }    protected override void ExitThreadCore() { timer.Stop(); netTimer.Stop(); try { broker?.Stop(); NoteBlocksEnded("The tray monitor quit; Windows removed the blocks."); EndEnhancedCoverage("Host quit"); } catch { } netStore?.Dispose(); tray.Visible = false; tray.Dispose(); history.Dispose(); File.WriteAllText(Path.Combine(Folder, "host.stopped"), DateTime.UtcNow.ToString("O")); base.ExitThreadCore(); }
+    }    protected override void ExitThreadCore() { timer.Stop(); netTimer.Stop(); updTimer.Stop(); try { broker?.Stop(); NoteBlocksEnded("The tray monitor quit; Windows removed the blocks."); EndEnhancedCoverage("Host quit"); } catch { } netStore?.Dispose(); tray.Visible = false; tray.Dispose(); history.Dispose(); File.WriteAllText(Path.Combine(Folder, "host.stopped"), DateTime.UtcNow.ToString("O")); base.ExitThreadCore(); }
 }
